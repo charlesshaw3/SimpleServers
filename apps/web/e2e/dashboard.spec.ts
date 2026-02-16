@@ -162,6 +162,18 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/setup/presets" && method === "GET") {
+      await withJson(200, {
+        presets: [
+          { id: "custom", label: "Custom", description: "Manual control over all settings" },
+          { id: "survival", label: "Survival Starter", description: "Paper defaults with crossplay toggles and moderate memory" },
+          { id: "modded", label: "Modded Fabric", description: "Fabric-focused settings with higher memory baseline" },
+          { id: "minigame", label: "Minigame Performance", description: "Paper settings tuned for plugin-heavy minigame servers" }
+        ]
+      });
+      return;
+    }
+
     if (pathname === "/servers/srv_1/logs" && method === "GET") {
       await withJson(200, { logs: [] });
       return;
@@ -356,6 +368,11 @@ test("connects and renders dashboard sections", async ({ page }) => {
   await page.getByRole("button", { name: "Stop" }).first().click();
   await expect.poll(() => stopCalled).toBe(true);
   await expect.poll(() => stopUsedEmptyJsonHeader).toBe(false);
+
+  await page.getByRole("button", { name: /^Setup$/ }).click();
+  await expect(page.getByRole("heading", { name: "Guided Server Setup" })).toBeVisible();
+  await page.getByRole("button", { name: /Modded Fabric/i }).first().click();
+  await expect(page.getByLabel("Type")).toHaveValue("fabric");
 
   await page.getByRole("button", { name: "Instant Launch (Recommended)" }).click();
   await expect.poll(() => quickStartCalled).toBe(true);

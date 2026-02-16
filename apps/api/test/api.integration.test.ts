@@ -78,6 +78,20 @@ describe("api integration", () => {
     });
   });
 
+  it("returns guided setup presets", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/setup/presets",
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const presetIds = response.json().presets.map((preset: { id: string }) => preset.id);
+    expect(presetIds).toEqual(["custom", "survival", "modded", "minigame"]);
+  });
+
   it("rejects protected endpoints without token", async () => {
     const response = await app.inject({
       method: "GET",
@@ -229,6 +243,43 @@ describe("api integration", () => {
     expect(fs.readFileSync(path.join(serverRoot, "config", "paper-global.yml"), "utf8")).toContain("enabled: true");
   });
 
+  it("returns editor diff preview lines", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "editor-diff-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=Before\nmax-players=10\n", "utf8");
+
+    const server = store.createServer({
+      name: "editor-diff-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25603,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/servers/${server.id}/editor/file/diff`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        path: "server.properties",
+        nextContent: "motd=After\nmax-players=20\n"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().diff).toContain("- motd=Before");
+    expect(response.json().diff).toContain("+ motd=After");
+    expect(response.json().diff).toContain("- max-players=10");
+    expect(response.json().diff).toContain("+ max-players=20");
+  });
+
   it("returns default backup policy and updates it", async () => {
     const policyGet = await app.inject({
       method: "GET",
@@ -300,6 +351,65 @@ describe("api integration", () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json().error).toContain("must be stopped");
+  });
+
+  it("restores backups and creates a pre-restore safety snapshot", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "restore-safety-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=before-backup\\n", "utf8");
+
+    const restoreServer = store.createServer({
+      name: "restore-safety-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25604,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const backupResponse = await app.inject({
+      method: "POST",
+      url: `/servers/${restoreServer.id}/backups`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+    expect(backupResponse.statusCode).toBe(200);
+    const originalBackupId = backupResponse.json().backup.backupId as string;
+
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=after-change\\n", "utf8");
+
+    const restoreResponse = await app.inject({
+      method: "POST",
+      url: `/servers/${restoreServer.id}/backups/${originalBackupId}/restore`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+
+    expect(restoreResponse.statusCode).toBe(200);
+    const preRestoreBackupId = restoreResponse.json().restore.preRestoreBackupId as string;
+    expect(preRestoreBackupId).toBeTruthy();
+    expect(preRestoreBackupId).not.toBe(originalBackupId);
+
+    const restoredContent = fs.readFileSync(path.join(serverRoot, "server.properties"), "utf8");
+    expect(restoredContent).toContain("motd=before-backup");
+
+    const backupsResponse = await app.inject({
+      method: "GET",
+      url: `/servers/${restoreServer.id}/backups`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+    expect(backupsResponse.statusCode).toBe(200);
+    const backups = backupsResponse.json().backups as Array<{ id: string; restoredAt: string | null }>;
+    expect(backups.some((entry) => entry.id === originalBackupId && entry.restoredAt !== null)).toBe(true);
+    expect(backups.some((entry) => entry.id === preRestoreBackupId)).toBe(true);
   });
 
   it("enables quick public hosting and returns status", async () => {

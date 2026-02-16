@@ -24,6 +24,12 @@ Base URL: `http://127.0.0.1:4010`
 - `GET /system/status`
 - `GET /system/hardware`
 
+`GET /setup/presets` returns the guided setup profiles:
+- `custom`
+- `survival`
+- `modded`
+- `minigame`
+
 ## Users (`owner`)
 
 - `GET /users`
@@ -81,6 +87,11 @@ Allowed files:
 - `GET /servers/:id/backup-policy`
 - `PUT /servers/:id/backup-policy` (`admin`)
 - `POST /servers/:id/backup-policy/prune-now` (`admin`)
+
+Restore notes:
+
+- `POST /servers/:id/backups/:backupId/restore` always creates a pre-restore safety snapshot first.
+- Restore response includes `restore.preRestoreBackupId` so UI flows can surface rollback checkpoints.
 
 ## Quick Public Hosting
 

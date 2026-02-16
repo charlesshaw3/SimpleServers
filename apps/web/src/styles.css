@@ -196,6 +196,41 @@ a {
   margin: 0 0 6px;
 }
 
+.preset-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin: 10px 0 12px;
+}
+
+.preset-card {
+  text-align: left;
+  display: grid;
+  gap: 7px;
+  min-height: 130px;
+  background: linear-gradient(150deg, #20334a 0%, #1a2a3f 100%);
+  border-color: #3f5d7f;
+}
+
+.preset-card strong {
+  font-size: 0.95rem;
+}
+
+.preset-card-description {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.4;
+}
+
+.preset-card .status-pill {
+  justify-self: start;
+}
+
+.preset-card.active {
+  border-color: #54d5c5;
+  background: linear-gradient(150deg, rgba(28, 194, 176, 0.24), rgba(24, 52, 68, 0.82));
+}
+
 .grid-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -419,6 +454,11 @@ th {
   margin: 0;
   display: grid;
   gap: 8px;
+}
+
+.list-compact {
+  margin-top: 4px;
+  margin-bottom: 10px;
 }
 
 .list li {

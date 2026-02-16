@@ -10,6 +10,10 @@ All roadmap milestones through `v1.0.0` are implemented in this repository and v
 - Server setup presets (`custom`, `survival`, `modded`, `minigame`).
 - Safer restore workflow with automatic pre-restore snapshot.
 - Config diff viewer for server file edits.
+- Added WebSocket stream status + reconnect behavior for more reliable live-console UX.
+- Added preset cards and plain-language guided setup copy for less technical operators.
+- Added restore UX confirmations and surfaced `preRestoreBackupId` safety checkpoint in UI notices.
+- Added integration/e2e validation coverage for presets, restore safety snapshots, and editor diff previews.
 
 ## Implemented in v0.3.0
 

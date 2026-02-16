@@ -713,7 +713,11 @@ export async function registerApiRoutes(
         .listTunnels(server.id)
         .find((entry) => entry.provider === "playit" || entry.status === "active");
       if (activeTunnel) {
-        quickHostAddress = `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}`;
+        const hasResolvedPublicAddress = activeTunnel.publicHost !== "pending.playit.gg";
+        quickHostAddress = hasResolvedPublicAddress ? `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}` : null;
+        if (!hasResolvedPublicAddress && !quickHostingWarning) {
+          quickHostingWarning = "Playit is still assigning a public endpoint.";
+        }
       }
     }
 
@@ -1436,7 +1440,7 @@ export async function registerApiRoutes(
 
   app.get("/meta", async () => ({
     name: "SimpleServers",
-    version: "0.1.14",
+    version: "0.2.0",
     dataDir: config.dataDir
   }));
 

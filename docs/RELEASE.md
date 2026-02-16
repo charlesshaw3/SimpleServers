@@ -95,6 +95,12 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.2.0`
+  - Finalized roadmap scope for `v0.2.0` with validated live WebSocket console, setup presets, safer restore snapshots, and config diff editing.
+  - Added log stream state/reconnect UX so console streaming remains reliable during transient socket drops.
+  - Improved guided setup for non-technical operators with preset cards and clearer one-click flow language.
+  - Surfaced restore safety snapshot IDs in UI notices and added explicit restore confirmation guardrails.
+  - Expanded API/e2e test coverage for presets, restore safety snapshots, and editor diff previews.
 - `v0.1.14`
   - Added Playit tunnel endpoint synchronization so dashboard/public-hosting status can resolve real assigned public addresses.
   - Added safer quick-hosting state behavior so unresolved placeholders remain pending instead of presenting as final endpoints.

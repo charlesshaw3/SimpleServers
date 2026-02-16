@@ -191,6 +191,14 @@ type VersionCatalog = {
   fabric: Array<{ id: string; stable: boolean }>;
 };
 
+type SetupPreset = {
+  id: "custom" | "survival" | "modded" | "minigame";
+  label: string;
+  description: string;
+};
+
+type LogStreamState = "disconnected" | "connecting" | "live" | "error";
+
 type HardwareProfile = {
   platform: string;
   arch: string;
@@ -285,6 +293,29 @@ function resolveDefaultApiBase(): string {
 
 const defaultApiBase = resolveDefaultApiBase();
 
+const fallbackSetupPresets: SetupPreset[] = [
+  {
+    id: "custom",
+    label: "Custom",
+    description: "Manual control over all settings."
+  },
+  {
+    id: "survival",
+    label: "Survival Starter",
+    description: "Balanced default for most friend groups."
+  },
+  {
+    id: "modded",
+    label: "Modded Fabric",
+    description: "Fabric-focused profile with more memory."
+  },
+  {
+    id: "minigame",
+    label: "Minigame Performance",
+    description: "Paper profile tuned for plugin-heavy servers."
+  }
+];
+
 export default function App() {
   const [apiBase, setApiBase] = useState(defaultApiBase);
   const [token, setToken] = useState("simpleservers-dev-admin-token");
@@ -311,11 +342,13 @@ export default function App() {
   const [audit, setAudit] = useState<Audit[]>([]);
   const [status, setStatus] = useState<{ servers: { total: number; running: number; crashed: number }; alerts: { open: number; total: number } } | null>(null);
   const [catalog, setCatalog] = useState<VersionCatalog>({ vanilla: [], paper: [], fabric: [] });
+  const [setupPresets, setSetupPresets] = useState<SetupPreset[]>(fallbackSetupPresets);
   const [hardware, setHardware] = useState<HardwareProfile | null>(null);
 
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Array<{ ts: string; line: string }>>([]);
   const [liveConsole, setLiveConsole] = useState(true);
+  const [logStreamState, setLogStreamState] = useState<LogStreamState>("disconnected");
 
   const [createServer, setCreateServer] = useState({
     name: "My Server",
@@ -386,6 +419,10 @@ export default function App() {
 
   const api = useRef(new ApiClient(defaultApiBase, token));
   const logSocketRef = useRef<WebSocket | null>(null);
+  const manuallyClosedSocketsRef = useRef(new WeakSet<WebSocket>());
+  const logReconnectTimerRef = useRef<number | null>(null);
+  const logStreamServerRef = useRef<string | null>(null);
+  const manualLogDisconnectRef = useRef(false);
 
   function setClientAuth(): void {
     api.current.setAuth(apiBase, token);
@@ -431,19 +468,60 @@ export default function App() {
     });
   }
 
-  function disconnectLogStream(): void {
+  function clearLogReconnectTimer(): void {
+    if (logReconnectTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(logReconnectTimerRef.current);
+    logReconnectTimerRef.current = null;
+  }
+
+  function scheduleLogReconnect(serverId: string): void {
+    if (logReconnectTimerRef.current !== null) {
+      return;
+    }
+
+    logReconnectTimerRef.current = window.setTimeout(() => {
+      logReconnectTimerRef.current = null;
+      if (manualLogDisconnectRef.current) {
+        return;
+      }
+      if (logStreamServerRef.current !== serverId) {
+        return;
+      }
+      connectLogStream(serverId);
+    }, 1800);
+  }
+
+  function disconnectLogStream(options?: { manual?: boolean }): void {
+    const manual = options?.manual ?? true;
+    manualLogDisconnectRef.current = manual;
+    clearLogReconnectTimer();
     if (logSocketRef.current) {
+      if (manual) {
+        manuallyClosedSocketsRef.current.add(logSocketRef.current);
+      }
       logSocketRef.current.close();
       logSocketRef.current = null;
+    }
+    if (manual) {
+      setLogStreamState("disconnected");
     }
   }
 
   function connectLogStream(serverId: string): void {
-    disconnectLogStream();
+    disconnectLogStream({ manual: true });
+    manualLogDisconnectRef.current = false;
+    logStreamServerRef.current = serverId;
+    setLogStreamState("connecting");
 
     const wsBase = apiBase.replace("http://", "ws://").replace("https://", "wss://");
     const socket = new WebSocket(`${wsBase}/servers/${serverId}/log-stream`, [`ss-token.${encodeTokenForWsSubprotocol(token)}`]);
     logSocketRef.current = socket;
+
+    socket.onopen = () => {
+      setLogStreamState("live");
+    };
 
     socket.onmessage = (event) => {
       try {
@@ -458,7 +536,23 @@ export default function App() {
     };
 
     socket.onerror = () => {
-      // fallback path remains periodic polling
+      setLogStreamState("error");
+    };
+
+    socket.onclose = () => {
+      const manuallyClosed = manuallyClosedSocketsRef.current.has(socket);
+      if (manuallyClosed) {
+        manuallyClosedSocketsRef.current.delete(socket);
+      }
+      if (logSocketRef.current === socket) {
+        logSocketRef.current = null;
+      }
+      if (manualLogDisconnectRef.current || manuallyClosed) {
+        setLogStreamState("disconnected");
+        return;
+      }
+      setLogStreamState("disconnected");
+      scheduleLogReconnect(serverId);
     };
   }
 
@@ -480,7 +574,7 @@ export default function App() {
   async function refreshAll(): Promise<void> {
     try {
       setBusy(true);
-      const [serversRes, alertsRes, tasksRes, tunnelsRes, auditRes, statusRes, catalogRes, hardwareRes] = await Promise.all([
+      const [serversRes, alertsRes, tasksRes, tunnelsRes, auditRes, statusRes, catalogRes, presetsRes, hardwareRes] = await Promise.all([
         api.current.get<{ servers: Server[] }>("/servers"),
         api.current.get<{ alerts: Alert[] }>("/alerts"),
         api.current.get<{ tasks: Task[] }>("/tasks"),
@@ -488,6 +582,7 @@ export default function App() {
         api.current.get<{ logs: Audit[] }>("/audit"),
         api.current.get<{ servers: { total: number; running: number; crashed: number }; alerts: { open: number; total: number } }>("/system/status"),
         api.current.get<{ catalog: VersionCatalog }>("/setup/catalog"),
+        api.current.get<{ presets: SetupPreset[] }>("/setup/presets"),
         api.current.get<HardwareProfile>("/system/hardware")
       ]);
 
@@ -498,6 +593,7 @@ export default function App() {
       setAudit(auditRes.logs);
       setStatus(statusRes);
       setCatalog(catalogRes.catalog);
+      setSetupPresets(presetsRes.presets.length > 0 ? presetsRes.presets : fallbackSetupPresets);
       setHardware(hardwareRes);
 
       const hasSelectedServer = selectedServerId ? serversRes.servers.some((server) => server.id === selectedServerId) : false;
@@ -730,12 +826,13 @@ export default function App() {
 
   useEffect(() => {
     if (!connected || !selectedServerId || !liveConsole) {
-      disconnectLogStream();
+      logStreamServerRef.current = null;
+      disconnectLogStream({ manual: true });
       return;
     }
 
     connectLogStream(selectedServerId);
-    return () => disconnectLogStream();
+    return () => disconnectLogStream({ manual: true });
   }, [connected, selectedServerId, liveConsole, apiBase, token]);
 
   const versionOptions = useMemo(() => {
@@ -756,6 +853,10 @@ export default function App() {
   const unresolvedAlerts = useMemo(() => {
     return alerts.filter((entry) => !entry.resolvedAt);
   }, [alerts]);
+
+  const activePreset = useMemo(() => {
+    return setupPresets.find((preset) => preset.id === createServer.preset) ?? fallbackSetupPresets.find((preset) => preset.id === createServer.preset) ?? fallbackSetupPresets[0];
+  }, [setupPresets, createServer.preset]);
 
   const filteredServers = useMemo(() => {
     const query = serverSearch.trim().toLowerCase();
@@ -825,6 +926,44 @@ export default function App() {
       }
     ];
   }, [servers.length, selectedServerStatus, quickHostingStatus?.publicAddress]);
+
+  const setupChecklist = useMemo(() => {
+    return [
+      {
+        id: "preset",
+        label: `Pick a preset (${activePreset.label})`,
+        detail: activePreset.description
+      },
+      {
+        id: "launch",
+        label: "Launch with one click",
+        detail: "Use Instant Launch for auto-create + auto-start."
+      },
+      {
+        id: "share",
+        label: "Share address with players",
+        detail: createServer.quickPublicHosting
+          ? "Quick hosting is enabled. Wait for the public endpoint to resolve."
+          : "Quick hosting is disabled. Players can join over your local network unless you enable public hosting."
+      }
+    ];
+  }, [activePreset.label, activePreset.description, createServer.quickPublicHosting]);
+
+  const logStreamBadge = useMemo(() => {
+    if (!liveConsole) {
+      return { label: "Off", tone: "neutral" as const };
+    }
+    if (logStreamState === "live") {
+      return { label: "Live", tone: "ok" as const };
+    }
+    if (logStreamState === "connecting") {
+      return { label: "Connecting", tone: "warn" as const };
+    }
+    if (logStreamState === "error") {
+      return { label: "Error", tone: "error" as const };
+    }
+    return { label: "Disconnected", tone: "warn" as const };
+  }, [liveConsole, logStreamState]);
 
   const quickTunnelStatus = normalizeStatus(quickHostingStatus?.tunnel?.status);
   const quickHostPending = Boolean(
@@ -970,7 +1109,7 @@ export default function App() {
       const response = await api.current.post<QuickStartResult>("/servers/quickstart", {
         name: createServer.name,
         preset: createServer.preset,
-        publicHosting: true,
+        publicHosting: createServer.quickPublicHosting,
         startServer: true,
         allowCracked: createServer.allowCracked
       });
@@ -1234,10 +1373,19 @@ export default function App() {
       return;
     }
 
+    const confirmed = window.confirm("Restore this backup? Current server files will be replaced, and a safety snapshot will be created first.");
+    if (!confirmed) {
+      return;
+    }
+
     try {
-      await api.current.post(`/servers/${selectedServerId}/backups/${backupId}/restore`);
+      const response = await api.current.post<{ ok: boolean; restore: { preRestoreBackupId: string } }>(
+        `/servers/${selectedServerId}/backups/${backupId}/restore`
+      );
       await refreshServerOperations(selectedServerId);
       await refreshAll();
+      setNotice(`Restore complete. Safety snapshot created (${response.restore.preRestoreBackupId}).`);
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -1666,8 +1814,24 @@ export default function App() {
           <section className="panel">
             <h2>Guided Server Setup</h2>
             <p className="muted-note">
-              Pick a preset and launch in seconds. Enable power mode when you want full control over ports and memory.
+              Pick a preset and launch in seconds. Advanced fields stay hidden until you turn on Power mode.
             </p>
+            <div className="preset-grid">
+              {setupPresets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={`preset-card ${createServer.preset === preset.id ? "active" : ""}`}
+                  onClick={() => applyPreset(preset.id)}
+                >
+                  <strong>{preset.label}</strong>
+                  <p className="preset-card-description">{preset.description}</p>
+                  <span className={`status-pill ${createServer.preset === preset.id ? "tone-ok" : "tone-neutral"}`}>
+                    {createServer.preset === preset.id ? "Selected" : "Use Preset"}
+                  </span>
+                </button>
+              ))}
+            </div>
             <div className="inline-actions">
               <button onClick={() => void quickStartNow()} disabled={busy} type="button">
                 {busy ? "Working..." : "Instant Launch (Recommended)"}
@@ -1678,6 +1842,16 @@ export default function App() {
                 </button>
               ) : null}
             </div>
+            <ul className="list list-compact">
+              {setupChecklist.map((entry) => (
+                <li key={entry.id}>
+                  <div>
+                    <strong>{entry.label}</strong>
+                    <span>{entry.detail}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
             <div className="setup-recipes">
               <h3>Popular Recipes</h3>
               <p className="muted-note">Based on common community hosting flows: quick start, crossplay, modded, and optional non-premium access.</p>
@@ -1941,6 +2115,7 @@ export default function App() {
             <article className="panel">
               <h2>Console Logs</h2>
               <div className="inline-actions">
+                <span className={`status-pill tone-${logStreamBadge.tone}`}>Stream {logStreamBadge.label}</span>
                 <label className="toggle">
                   <input type="checkbox" checked={liveConsole} onChange={(e) => setLiveConsole(e.target.checked)} />
                   Live stream (WebSocket)
@@ -1951,6 +2126,7 @@ export default function App() {
                   </button>
                 ) : null}
               </div>
+              <p className="muted-note">If the stream drops, the dashboard automatically retries the WebSocket connection.</p>
               <div className="log-box">
                 {logs.map((line, index) => (
                   <div key={`${line.ts}-${index}`}>
@@ -1983,6 +2159,7 @@ export default function App() {
 
             <article className="panel">
               <h2>Backups and Retention</h2>
+              <p className="muted-note">Restore actions automatically create a safety snapshot before replacing files.</p>
               <div className="grid-form">
                 <label>
                   Max Backups
