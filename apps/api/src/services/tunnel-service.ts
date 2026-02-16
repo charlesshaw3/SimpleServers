@@ -4,6 +4,7 @@ import path from "node:path";
 import { request } from "undici";
 import { loadConfig } from "../lib/config.js";
 import { downloadToFile, fetchJsonWithRetry } from "../lib/download.js";
+import { nowIso } from "../lib/util.js";
 import { store } from "../repositories/store.js";
 import type { TunnelRecord } from "../domain/types.js";
 import { ConsoleHub } from "./console-hub.js";
@@ -33,6 +34,15 @@ type TunnelLaunchReadiness = {
   reason?: string;
 };
 
+type PlayitSyncState = {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  nextAttemptAt: string | null;
+  lastPendingReason: string | null;
+  lastError: string | null;
+  endpointAssigned: boolean;
+};
+
 type PlayitPortType = "tcp" | "udp" | "both";
 
 type PlayitRunDataResult = {
@@ -57,6 +67,7 @@ type PlayitRunDataResult = {
 
 export class TunnelService {
   private readonly runtimes = new Map<string, TunnelRuntime>();
+  private readonly playitSyncState = new Map<string, PlayitSyncState>();
 
   constructor(private readonly consoleHub: ConsoleHub) {}
 
@@ -247,6 +258,9 @@ export class TunnelService {
       const runtime = this.runtimes.get(tunnelId);
       if (runtime) {
         runtime.endpointSyncTimer = timer;
+        this.setPlayitSyncState(tunnelId, {
+          nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnelId)
+        });
       } else {
         clearInterval(timer);
       }
@@ -267,6 +281,9 @@ export class TunnelService {
     const runtime = this.runtimes.get(tunnelId);
     if (!runtime) {
       store.updateTunnelStatus(tunnelId, "idle");
+      this.setPlayitSyncState(tunnelId, {
+        nextAttemptAt: null
+      });
       return;
     }
 
@@ -298,11 +315,23 @@ export class TunnelService {
       return { synced: false };
     }
 
+    this.setPlayitSyncState(tunnel.id, {
+      lastAttemptAt: nowIso(),
+      nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id),
+      endpointAssigned: tunnel.publicHost !== "pending.playit.gg"
+    });
+
     try {
       const playitCommand = await this.resolvePlayitCommandForSync(tunnel);
       const secret = await this.resolvePlayitSecret(playitCommand);
       if (!secret) {
         store.updateTunnelStatus(tunnel.id, "pending");
+        this.setPlayitSyncState(tunnel.id, {
+          endpointAssigned: false,
+          lastPendingReason: "playit secret is not configured yet",
+          lastError: null,
+          nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id)
+        });
         return { synced: false, pendingReason: "playit secret is not configured yet" };
       }
 
@@ -311,11 +340,23 @@ export class TunnelService {
       if (!tunnelMatch) {
         const pendingReason = this.extractPendingReason(runData);
         store.updateTunnelStatus(tunnel.id, pendingReason ? "pending" : "starting");
+        this.setPlayitSyncState(tunnel.id, {
+          endpointAssigned: false,
+          lastPendingReason: pendingReason ?? "playit is still assigning a public endpoint",
+          lastError: null,
+          nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id)
+        });
         return { synced: false, pendingReason };
       }
 
       const endpoint = parseDisplayAddress(tunnelMatch.display_address);
       if (!endpoint) {
+        this.setPlayitSyncState(tunnel.id, {
+          endpointAssigned: false,
+          lastPendingReason: "playit returned an invalid tunnel address",
+          lastError: null,
+          nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id)
+        });
         return { synced: false, pendingReason: "playit returned an invalid tunnel address" };
       }
 
@@ -331,6 +372,13 @@ export class TunnelService {
       }
 
       store.updateTunnelStatus(tunnel.id, "active");
+      this.setPlayitSyncState(tunnel.id, {
+        endpointAssigned: true,
+        lastSuccessAt: nowIso(),
+        lastPendingReason: null,
+        lastError: null,
+        nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id)
+      });
       return {
         synced: true,
         endpoint
@@ -338,6 +386,11 @@ export class TunnelService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.consoleHub.publish(tunnel.serverId, `[tunnel] playit endpoint sync failed: ${message}`);
+      this.setPlayitSyncState(tunnel.id, {
+        endpointAssigned: false,
+        lastError: message,
+        nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id)
+      });
       return {
         synced: false,
         pendingReason: message
@@ -345,13 +398,93 @@ export class TunnelService {
     }
   }
 
+  async getTunnelDiagnostics(tunnelOrId: string | TunnelRecord): Promise<{
+    tunnelId: string;
+    provider: TunnelRecord["provider"];
+    status: string;
+    command: string;
+    commandAvailable: boolean;
+    authConfigured: boolean | null;
+    endpointAssigned: boolean;
+    endpoint: string | null;
+    retry: {
+      nextAttemptAt: string | null;
+      nextAttemptInSeconds: number | null;
+      lastAttemptAt: string | null;
+      lastSuccessAt: string | null;
+    };
+    message: string | null;
+  } | null> {
+    const tunnel = typeof tunnelOrId === "string" ? store.getTunnel(tunnelOrId) : tunnelOrId;
+    if (!tunnel) {
+      return null;
+    }
+
+    const readiness = this.getTunnelLaunchReadiness(tunnel);
+    const endpointAssigned = tunnel.publicHost !== "pending.playit.gg";
+    const endpoint = endpointAssigned ? `${tunnel.publicHost}:${String(tunnel.publicPort)}` : null;
+
+    if (tunnel.provider !== "playit") {
+      return {
+        tunnelId: tunnel.id,
+        provider: tunnel.provider,
+        status: tunnel.status,
+        command: readiness.command,
+        commandAvailable: readiness.ok,
+        authConfigured: null,
+        endpointAssigned,
+        endpoint,
+        retry: {
+          nextAttemptAt: null,
+          nextAttemptInSeconds: null,
+          lastAttemptAt: null,
+          lastSuccessAt: null
+        },
+        message: readiness.reason ?? null
+      };
+    }
+
+    const command = await this.resolvePlayitCommandForSync(tunnel);
+    const commandAvailable = Boolean(command && this.commandExists(command));
+    const secret = await this.resolvePlayitSecret(command);
+    const authConfigured = Boolean(secret);
+    const sync = this.getPlayitSyncState(tunnel.id);
+    const nextAttemptAt = sync.nextAttemptAt;
+    const nextAttemptInSeconds = nextAttemptAt ? Math.max(0, Math.ceil((Date.parse(nextAttemptAt) - Date.now()) / 1000)) : null;
+    const message = sync.lastError ?? sync.lastPendingReason ?? readiness.reason ?? null;
+
+    return {
+      tunnelId: tunnel.id,
+      provider: tunnel.provider,
+      status: tunnel.status,
+      command: command ?? readiness.command,
+      commandAvailable,
+      authConfigured,
+      endpointAssigned,
+      endpoint,
+      retry: {
+        nextAttemptAt,
+        nextAttemptInSeconds,
+        lastAttemptAt: sync.lastAttemptAt,
+        lastSuccessAt: sync.lastSuccessAt
+      },
+      message
+    };
+  }
+
   private clearTunnelSyncTimer(tunnelId: string): void {
     const runtime = this.runtimes.get(tunnelId);
     if (!runtime?.endpointSyncTimer) {
+      this.setPlayitSyncState(tunnelId, {
+        nextAttemptAt: null
+      });
       return;
     }
     clearInterval(runtime.endpointSyncTimer);
     runtime.endpointSyncTimer = null;
+    this.setPlayitSyncState(tunnelId, {
+      nextAttemptAt: null
+    });
   }
 
   private async resolvePlayitCommandForSync(tunnel: TunnelRecord): Promise<string | null> {
@@ -493,6 +626,34 @@ export class TunnelService {
     const pending = runData?.pending ?? [];
     const first = pending.find((entry) => typeof entry.status_msg === "string" && entry.status_msg.trim().length > 0);
     return first?.status_msg?.trim();
+  }
+
+  private getPlayitSyncState(tunnelId: string): PlayitSyncState {
+    return (
+      this.playitSyncState.get(tunnelId) ?? {
+        lastAttemptAt: null,
+        lastSuccessAt: null,
+        nextAttemptAt: null,
+        lastPendingReason: null,
+        lastError: null,
+        endpointAssigned: false
+      }
+    );
+  }
+
+  private setPlayitSyncState(tunnelId: string, patch: Partial<PlayitSyncState>): void {
+    const previous = this.getPlayitSyncState(tunnelId);
+    this.playitSyncState.set(tunnelId, {
+      ...previous,
+      ...patch
+    });
+  }
+
+  private resolveNextPlayitAttemptAt(tunnelId: string): string | null {
+    if (!this.runtimes.has(tunnelId)) {
+      return null;
+    }
+    return new Date(Date.now() + 7000).toISOString();
   }
 
   private providerDefaults(

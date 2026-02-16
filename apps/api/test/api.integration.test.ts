@@ -92,6 +92,47 @@ describe("api integration", () => {
     expect(presetIds).toEqual(["custom", "survival", "modded", "minigame"]);
   });
 
+  it("records telemetry events and returns funnel metrics", async () => {
+    const eventResponse = await app.inject({
+      method: "POST",
+      url: "/telemetry/events",
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        sessionId: "session-abc",
+        event: "ui.connect.success",
+        metadata: { source: "test" }
+      }
+    });
+    expect(eventResponse.statusCode).toBe(200);
+    expect(eventResponse.json().eventId).toBeTruthy();
+
+    await app.inject({
+      method: "POST",
+      url: "/telemetry/events",
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        sessionId: "session-abc",
+        event: "server.create.success",
+        metadata: {}
+      }
+    });
+
+    const funnelResponse = await app.inject({
+      method: "GET",
+      url: "/telemetry/funnel?hours=24",
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+    expect(funnelResponse.statusCode).toBe(200);
+    expect(funnelResponse.json().stageTotals.connect).toBeGreaterThanOrEqual(1);
+    expect(funnelResponse.json().stageTotals.create).toBeGreaterThanOrEqual(1);
+  });
+
   it("rejects protected endpoints without token", async () => {
     const response = await app.inject({
       method: "GET",
@@ -353,6 +394,38 @@ describe("api integration", () => {
     expect(response.json().error).toContain("must be stopped");
   });
 
+  it("repairs missing core startup files through preflight repair endpoint", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "repair-core-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.jar"), "placeholder", "utf8");
+    const repairServer = store.createServer({
+      name: "repair-core-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25605,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/servers/${repairServer.id}/preflight/repair-core`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {}
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fs.existsSync(path.join(serverRoot, "eula.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(serverRoot, "server.jar"))).toBe(true);
+    expect(response.json().preflight.serverId).toBe(repairServer.id);
+  });
+
   it("restores backups and creates a pre-restore safety snapshot", async () => {
     const serverRoot = path.join(testDataDir, "servers", "restore-safety-server");
     fs.mkdirSync(serverRoot, { recursive: true });
@@ -451,6 +524,53 @@ describe("api integration", () => {
     expect(status.json().server.localAddress).toBe("127.0.0.1:25592");
     expect(status.json().publicAddress).toBeNull();
     expect(status.json().steps[0]).toContain("assigning a public endpoint");
+  });
+
+  it("returns public-hosting diagnostics and support bundle", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "diagnostics-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    const diagnosticsServer = store.createServer({
+      name: "diagnostics-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25606,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    await app.inject({
+      method: "POST",
+      url: `/servers/${diagnosticsServer.id}/public-hosting/quick-enable`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {}
+    });
+
+    const diagnosticsResponse = await app.inject({
+      method: "GET",
+      url: `/servers/${diagnosticsServer.id}/public-hosting/diagnostics`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+    expect(diagnosticsResponse.statusCode).toBe(200);
+    expect(diagnosticsResponse.json().diagnostics.provider).toBe("playit");
+
+    const bundleResponse = await app.inject({
+      method: "GET",
+      url: `/servers/${diagnosticsServer.id}/support-bundle`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+    expect(bundleResponse.statusCode).toBe(200);
+    expect(bundleResponse.json().server.id).toBe(diagnosticsServer.id);
+    expect(bundleResponse.json().preflight.serverId).toBe(diagnosticsServer.id);
   });
 
   it("deletes a server and removes local files and backup archives", async () => {

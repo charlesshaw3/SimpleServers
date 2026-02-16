@@ -148,5 +148,16 @@ export function migrate(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_crash_reports_server_id ON crash_reports(server_id);
+
+    CREATE TABLE IF NOT EXISTS ux_telemetry_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      metadata TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ux_telemetry_created_at ON ux_telemetry_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_ux_telemetry_event ON ux_telemetry_events(event);
   `);
 }

@@ -162,6 +162,16 @@ const editorDiffSchema = z.object({
   nextContent: z.string()
 });
 
+const telemetryEventSchema = z.object({
+  sessionId: z.string().trim().min(6).max(128),
+  event: z.string().trim().min(3).max(120),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const telemetryFunnelQuerySchema = z.object({
+  hours: z.coerce.number().int().min(1).max(24 * 30).default(24)
+});
+
 function applyPreset(payload: z.infer<typeof createServerSchema>): z.infer<typeof createServerSchema> {
   if (payload.preset === "survival") {
     return {
@@ -910,6 +920,63 @@ export async function registerApiRoutes(
     };
   });
 
+  app.post("/servers/:id/preflight/repair-core", { preHandler: [authenticate, requireRole("admin")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    if (deps.runtime.isRunning(id) || server.status === "running" || server.status === "starting") {
+      return reply.code(409).send({ error: "Server must be stopped before running repair actions" });
+    }
+
+    const repaired = await deps.setup.repairCoreFiles(server);
+    const preflight = deps.preflight.run(server);
+    writeAudit(request.user!.username, "server.preflight.repair_core", "server", id, repaired);
+    return {
+      repaired: repaired.repaired,
+      preflight
+    };
+  });
+
+  app.get("/servers/:id/support-bundle", { preHandler: [authenticate] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const report = deps.preflight.run(server);
+    const logs = deps.consoleHub.getHistory(id).slice(-500);
+    const crashes = deps.crashReports.list(id).slice(0, 10);
+    const tunnels = deps.tunnels.listTunnels(id);
+    return {
+      generatedAt: new Date().toISOString(),
+      server: {
+        id: server.id,
+        name: server.name,
+        status: server.status,
+        type: server.type,
+        mcVersion: server.mcVersion,
+        port: server.port,
+        bedrockPort: server.bedrockPort,
+        javaPath: server.javaPath,
+        rootPath: server.rootPath
+      },
+      preflight: report,
+      tunnels: tunnels.map((tunnel) => ({
+        id: tunnel.id,
+        provider: tunnel.provider,
+        status: tunnel.status,
+        localPort: tunnel.localPort,
+        publicAddress: `${tunnel.publicHost}:${String(tunnel.publicPort)}`
+      })),
+      crashReports: crashes,
+      recentLogs: logs
+    };
+  });
+
   app.get(
     "/servers/:id/log-stream",
     { websocket: true },
@@ -1151,6 +1218,46 @@ export async function registerApiRoutes(
     };
   });
 
+  app.get("/servers/:id/public-hosting/diagnostics", { preHandler: [authenticate] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const tunnels = deps.tunnels.listTunnels(id);
+    const tunnel = tunnels.find((entry) => entry.provider === "playit") ?? tunnels[0] ?? null;
+    if (!tunnel) {
+      return {
+        diagnostics: null,
+        actions: ["Enable quick hosting to create and diagnose a tunnel."]
+      };
+    }
+
+    if (tunnel.provider === "playit") {
+      await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id).catch(() => ({ synced: false }));
+    }
+
+    const diagnostics = await deps.tunnels.getTunnelDiagnostics(tunnel.id);
+    const actions: string[] = [];
+    if (diagnostics?.provider === "playit") {
+      if (!diagnostics.commandAvailable) {
+        actions.push("Install or allow SimpleServers to manage the playit binary.");
+      }
+      if (diagnostics.authConfigured === false) {
+        actions.push("Launch playit once and complete agent auth, or set PLAYIT_SECRET / PLAYIT_SECRET_PATH.");
+      }
+      if (!diagnostics.endpointAssigned) {
+        actions.push("Keep the app running while playit assigns a public endpoint.");
+      }
+    }
+
+    return {
+      diagnostics,
+      actions
+    };
+  });
+
   app.get("/servers/:id/public-hosting/status", { preHandler: [authenticate] }, async (request) => {
     const { id } = request.params as { id: string };
     const server = store.getServerById(id);
@@ -1298,6 +1405,57 @@ export async function registerApiRoutes(
     return { logs: store.listAudit(300) };
   });
 
+  app.post("/telemetry/events", { preHandler: [authenticate] }, async (request) => {
+    const payload = telemetryEventSchema.parse(request.body ?? {});
+    const event = store.createUxTelemetryEvent({
+      sessionId: payload.sessionId,
+      event: payload.event,
+      metadata: payload.metadata ?? {}
+    });
+    return { eventId: event.id };
+  });
+
+  app.get("/telemetry/funnel", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const query = telemetryFunnelQuerySchema.parse(request.query ?? {});
+    const since = new Date(Date.now() - query.hours * 60 * 60 * 1000).toISOString();
+    const events = store.listUxTelemetryEvents({ since, limit: 10000 }).reverse();
+    const stageEvents = ["ui.connect.success", "server.create.success", "server.start.success", "hosting.public.ready"] as const;
+
+    const bySession = new Map<string, Set<string>>();
+    for (const event of events) {
+      if (!stageEvents.includes(event.event as (typeof stageEvents)[number])) {
+        continue;
+      }
+      const reached = bySession.get(event.sessionId) ?? new Set<string>();
+      reached.add(event.event);
+      bySession.set(event.sessionId, reached);
+    }
+
+    const sessions = Array.from(bySession.values());
+    const stageTotals = {
+      connect: sessions.filter((stage) => stage.has("ui.connect.success")).length,
+      create: sessions.filter((stage) => stage.has("server.create.success")).length,
+      start: sessions.filter((stage) => stage.has("server.start.success")).length,
+      publicReady: sessions.filter((stage) => stage.has("hosting.public.ready")).length
+    };
+
+    const connectBase = Math.max(1, stageTotals.connect);
+    const createBase = Math.max(1, stageTotals.create);
+    const startBase = Math.max(1, stageTotals.start);
+
+    return {
+      windowHours: query.hours,
+      sessionsObserved: bySession.size,
+      stageTotals,
+      conversion: {
+        createFromConnectPct: Math.round((stageTotals.create / connectBase) * 100),
+        startFromCreatePct: Math.round((stageTotals.start / createBase) * 100),
+        publicReadyFromStartPct: Math.round((stageTotals.publicReady / startBase) * 100)
+      },
+      recentEvents: events.slice(-100)
+    };
+  });
+
   app.get("/tunnels", { preHandler: [authenticate] }, async (request) => {
     const query = request.query as { serverId?: string };
     return { tunnels: deps.tunnels.listTunnels(query.serverId) };
@@ -1440,7 +1598,7 @@ export async function registerApiRoutes(
 
   app.get("/meta", async () => ({
     name: "SimpleServers",
-    version: "0.2.0",
+    version: "0.2.1",
     dataDir: config.dataDir
   }));
 

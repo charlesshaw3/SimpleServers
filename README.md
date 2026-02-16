@@ -4,10 +4,10 @@ SimpleServers is an open-source, local-first Minecraft server hosting and admini
 
 It is designed as a stronger open alternative to closed desktop hosts: fast setup, safer operations, and richer owner tooling.
 
-Latest stable desktop release: `v0.2.0`
+Latest stable desktop release: `v0.2.1`
 
 - Releases: `https://github.com/dueldev/SimpleServers/releases`
-- Current release: `https://github.com/dueldev/SimpleServers/releases/tag/v0.2.0`
+- Current release: `https://github.com/dueldev/SimpleServers/releases/tag/v0.2.1`
 
 ## Production Features
 
@@ -29,6 +29,11 @@ Latest stable desktop release: `v0.2.0`
 - One-click Instant Launch flow: create + provision + start + quick-host in a single action.
 - Simplified, progressive dashboard UX with focused views (`Overview`, `Setup`, `Manage`, `Content`, `Advanced`).
 - Guided setup preset cards with plain-language recommendations for non-technical hosts.
+- Startup Wizard flow for first-run operators (`Create -> Start -> Publish`).
+- Public-hosting diagnostics with explicit dependency/auth/endpoint checks and retry countdown.
+- Simple `server.properties` form editor with per-save rollback snapshots.
+- One-click support bundle export for startup/crash troubleshooting.
+- Local UX funnel telemetry (`connect -> create -> start -> public-ready`) for product iteration.
 - Power mode toggle to surface advanced controls only when needed.
 - Desktop app packaging with release update channels.
 
@@ -133,6 +138,7 @@ export SIMPLESERVERS_REMOTE_TOKEN='replace-this-too'
 - On first launch, the desktop app boots an embedded API and then loads the UI.
 - A startup screen is shown while services initialize.
 - The app writes startup diagnostics to a desktop log for fast triage.
+- `v0.2.1` adds first-run startup wizard UX, public-hosting diagnostics, guided config editing with snapshots, crash-recovery helper actions, support bundle export, and local onboarding funnel telemetry.
 - `v0.2.0` finalizes the roadmap milestone for live WebSocket console UX, setup presets, safer restore snapshots, and config diff editing.
 - `v0.1.14` adds Playit endpoint syncing, public-address pending behavior, and more guided hosting UX.
 - `v0.1.13` adds full multi-server delete management and in-app text-safe file browser/edit endpoints.

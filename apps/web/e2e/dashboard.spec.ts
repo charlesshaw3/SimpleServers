@@ -5,6 +5,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
   let quickStartCalled = false;
   let stopCalled = false;
   let stopUsedEmptyJsonHeader = false;
+  let telemetryPosted = false;
 
   await page.route("http://127.0.0.1:4010/**", async (route) => {
     const request = route.request();
@@ -225,6 +226,30 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/servers/srv_1/public-hosting/diagnostics" && method === "GET") {
+      await withJson(200, {
+        diagnostics: {
+          tunnelId: "tnl_1",
+          provider: "playit",
+          status: "pending",
+          command: "playit",
+          commandAvailable: true,
+          authConfigured: true,
+          endpointAssigned: false,
+          endpoint: null,
+          retry: {
+            nextAttemptAt: new Date(Date.now() + 5000).toISOString(),
+            nextAttemptInSeconds: 5,
+            lastAttemptAt: new Date().toISOString(),
+            lastSuccessAt: null
+          },
+          message: "waiting for endpoint"
+        },
+        actions: ["Keep the app running while playit assigns a public endpoint."]
+      });
+      return;
+    }
+
     if (pathname === "/servers/srv_1/public-hosting/quick-enable" && method === "POST") {
       await withJson(200, {
         tunnel: {
@@ -307,6 +332,31 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/telemetry/funnel" && method === "GET") {
+      await withJson(200, {
+        windowHours: 168,
+        sessionsObserved: 1,
+        stageTotals: {
+          connect: 1,
+          create: 1,
+          start: 1,
+          publicReady: 0
+        },
+        conversion: {
+          createFromConnectPct: 100,
+          startFromCreatePct: 100,
+          publicReadyFromStartPct: 0
+        }
+      });
+      return;
+    }
+
+    if (pathname === "/telemetry/events" && method === "POST") {
+      telemetryPosted = true;
+      await withJson(200, { eventId: "uxevt_1" });
+      return;
+    }
+
     if (pathname === "/system/java/channels" && method === "GET") {
       await withJson(200, {
         channels: [
@@ -383,4 +433,5 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
   await page.getByRole("button", { name: "Install" }).click();
   await expect.poll(() => installCalled).toBe(true);
+  await expect.poll(() => telemetryPosted).toBe(true);
 });

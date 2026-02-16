@@ -134,3 +134,11 @@ export type CrashReportRecord = {
   reportPath: string;
   createdAt: string;
 };
+
+export type UxTelemetryEventRecord = {
+  id: string;
+  sessionId: string;
+  event: string;
+  metadata: string;
+  createdAt: string;
+};

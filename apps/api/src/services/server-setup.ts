@@ -116,4 +116,43 @@ export class ServerSetupService {
       args
     };
   }
+
+  async repairCoreFiles(server: ServerRecord): Promise<{ repaired: string[] }> {
+    const repaired: string[] = [];
+    fs.mkdirSync(server.rootPath, { recursive: true });
+
+    if (!fs.existsSync(server.jarPath)) {
+      const jarUrl = await this.resolveJarUrl(server.type, server.mcVersion);
+      await downloadToFile(jarUrl, server.jarPath);
+      repaired.push("server.jar");
+    }
+
+    const eulaPath = path.join(server.rootPath, "eula.txt");
+    if (!fs.existsSync(eulaPath)) {
+      fs.writeFileSync(eulaPath, "eula=true\n", "utf8");
+      repaired.push("eula.txt");
+    }
+
+    const propertiesPath = path.join(server.rootPath, "server.properties");
+    if (!fs.existsSync(propertiesPath)) {
+      fs.writeFileSync(
+        propertiesPath,
+        createServerProperties({
+          id: server.id,
+          name: server.name,
+          type: server.type,
+          mcVersion: server.mcVersion,
+          rootPath: server.rootPath,
+          port: server.port,
+          allowCracked: false,
+          enableGeyser: false,
+          enableFloodgate: false
+        }),
+        "utf8"
+      );
+      repaired.push("server.properties");
+    }
+
+    return { repaired };
+  }
 }

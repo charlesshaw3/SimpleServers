@@ -35,6 +35,7 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - `tunnels`: network exposure definitions and adapter state.
 - `server_packages`: installed mods/plugins/modpacks/resourcepacks.
 - `crash_reports`: structured crash bundle references.
+- `ux_telemetry_events`: local dashboard funnel telemetry for UX conversion analysis.
 
 ## Runtime Flows
 
@@ -55,6 +56,7 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - Preflight checks run before start.
 - Missing core files and plugin/mod conflicts can block startup.
 - Warning-level issues emit alerts without hard block.
+- Repair helpers can restore missing core startup files (`server.jar`, `eula.txt`, `server.properties`) while server is stopped.
 
 4. Backups and restore
 
@@ -73,6 +75,12 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - Non-local requests are denied by default.
 - Remote mode must be explicitly enabled.
 - Allowed origins and remote token checks gate non-local browser/API flows.
+
+7. Operator support bundles
+
+- Support bundles are generated on demand from API (`/servers/:id/support-bundle`).
+- Bundle payload includes server metadata, preflight state, recent logs, tunnel state, and crash report references.
+- Intended for quick escalation/triage without shell access to local data directories.
 
 ## Provider Integrations
 

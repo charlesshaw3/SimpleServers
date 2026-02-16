@@ -48,6 +48,8 @@ Base URL: `http://127.0.0.1:4010`
 - `POST /servers/:id/command` (`moderator`)
 - `GET /servers/:id/logs`
 - `GET /servers/:id/preflight`
+- `POST /servers/:id/preflight/repair-core` (`admin`, requires stopped server)
+- `GET /servers/:id/support-bundle`
 - `GET /servers/:id/log-stream` (websocket; auth via `Sec-WebSocket-Protocol: ss-token.<base64url-token>` or query `token`)
 
 `POST /servers/quickstart` defaults:
@@ -97,11 +99,13 @@ Restore notes:
 
 - `POST /servers/:id/public-hosting/quick-enable` (`admin`)
 - `GET /servers/:id/public-hosting/status`
+- `GET /servers/:id/public-hosting/diagnostics`
 
 Notes:
 
 - Playit-backed tunnels now synchronize assigned public host/port from Playit run data.
 - `publicAddress` remains `null` while Playit is still assigning an endpoint (`pending`/`starting` states).
+- diagnostics include command availability, auth status, endpoint assignment state, and retry timing metadata.
 
 ## Tasks
 
@@ -119,6 +123,11 @@ Notes:
 ## Audit (`admin`)
 
 - `GET /audit`
+
+## UX Telemetry
+
+- `POST /telemetry/events`
+- `GET /telemetry/funnel?hours=<1-720>` (`admin`)
 
 ## Tunnels
 

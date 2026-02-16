@@ -95,6 +95,12 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.2.1`
+  - Added a first-run Startup Wizard and simpler action flow for non-technical operators.
+  - Added public-hosting diagnostics endpoint + UI (`dependency`, `auth`, `endpoint`, `retry`) to reduce unresolved tunnel guesswork.
+  - Added guided `server.properties` form editing and per-save rollback snapshots in the Manage workspace.
+  - Added crash-recovery helper actions, including one-click core-file repair and support-bundle export.
+  - Added local UX telemetry events/funnel metrics for onboarding conversion analysis.
 - `v0.2.0`
   - Finalized roadmap scope for `v0.2.0` with validated live WebSocket console, setup presets, safer restore snapshots, and config diff editing.
   - Added log stream state/reconnect UX so console streaming remains reliable during transient socket drops.

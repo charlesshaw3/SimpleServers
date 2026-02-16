@@ -4,6 +4,14 @@
 
 All roadmap milestones through `v1.0.0` are implemented in this repository and validated by local build/tests.
 
+## Implemented in v0.2.1
+
+- Added first-run Startup Wizard (`Create -> Start -> Publish`) with one-click actions for non-technical users.
+- Added public-hosting diagnostics (`/public-hosting/diagnostics`) with dependency/auth/endpoint/retry visibility.
+- Added guided `server.properties` form editing with per-save rollback snapshots.
+- Added crash-recovery helper actions (repair core startup files, retry start, export support bundle).
+- Added local UX telemetry endpoints and dashboard funnel reporting for onboarding conversion tracking.
+
 ## Implemented in v0.2.0
 
 - Live WebSocket console in dashboard.

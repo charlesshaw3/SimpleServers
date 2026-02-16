@@ -10,6 +10,7 @@ import type {
   ServerRecord,
   TaskRecord,
   TunnelRecord,
+  UxTelemetryEventRecord,
   UserRecord,
   UserRole
 } from "../domain/types.js";
@@ -67,6 +68,14 @@ type RawCrashReport = {
   reason: string;
   exit_code: number | null;
   report_path: string;
+  created_at: string;
+};
+
+type RawUxTelemetryEvent = {
+  id: string;
+  session_id: string;
+  event: string;
+  metadata: string;
   created_at: string;
 };
 
@@ -130,6 +139,16 @@ function toCrashReport(row: RawCrashReport): CrashReportRecord {
     reason: row.reason,
     exitCode: row.exit_code,
     reportPath: row.report_path,
+    createdAt: row.created_at
+  };
+}
+
+function toUxTelemetryEvent(row: RawUxTelemetryEvent): UxTelemetryEventRecord {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    event: row.event,
+    metadata: row.metadata,
     createdAt: row.created_at
   };
 }
@@ -704,5 +723,45 @@ export const store = {
   getCrashReport(id: string): CrashReportRecord | undefined {
     const row = db.prepare("SELECT * FROM crash_reports WHERE id = ?").get(id) as RawCrashReport | undefined;
     return row ? toCrashReport(row) : undefined;
+  },
+
+  createUxTelemetryEvent(input: {
+    sessionId: string;
+    event: string;
+    metadata?: unknown;
+  }): UxTelemetryEventRecord {
+    const record: UxTelemetryEventRecord = {
+      id: uid("uxevt"),
+      sessionId: input.sessionId,
+      event: input.event,
+      metadata: safeJsonStringify(input.metadata ?? {}),
+      createdAt: nowIso()
+    };
+
+    db.prepare("INSERT INTO ux_telemetry_events (id, session_id, event, metadata, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      record.id,
+      record.sessionId,
+      record.event,
+      record.metadata,
+      record.createdAt
+    );
+
+    return record;
+  },
+
+  listUxTelemetryEvents(input?: {
+    since?: string;
+    limit?: number;
+  }): UxTelemetryEventRecord[] {
+    const limit = input?.limit ?? 500;
+    if (input?.since) {
+      const rows = db
+        .prepare("SELECT * FROM ux_telemetry_events WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?")
+        .all(input.since, limit) as RawUxTelemetryEvent[];
+      return rows.map(toUxTelemetryEvent);
+    }
+
+    const rows = db.prepare("SELECT * FROM ux_telemetry_events ORDER BY created_at DESC LIMIT ?").all(limit) as RawUxTelemetryEvent[];
+    return rows.map(toUxTelemetryEvent);
   }
 };

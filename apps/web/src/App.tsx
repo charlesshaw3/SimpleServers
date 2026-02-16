@@ -61,6 +61,27 @@ type QuickHostingStatus = {
   steps: string[];
 };
 
+type QuickHostingDiagnostics = {
+  diagnostics: {
+    tunnelId: string;
+    provider: "manual" | "playit" | "cloudflared" | "ngrok";
+    status: string;
+    command: string;
+    commandAvailable: boolean;
+    authConfigured: boolean | null;
+    endpointAssigned: boolean;
+    endpoint: string | null;
+    retry: {
+      nextAttemptAt: string | null;
+      nextAttemptInSeconds: number | null;
+      lastAttemptAt: string | null;
+      lastSuccessAt: string | null;
+    };
+    message: string | null;
+  } | null;
+  actions: string[];
+};
+
 type QuickStartResult = {
   server: Server;
   started: boolean;
@@ -185,6 +206,22 @@ type Audit = {
   createdAt: string;
 };
 
+type TelemetryFunnel = {
+  windowHours: number;
+  sessionsObserved: number;
+  stageTotals: {
+    connect: number;
+    create: number;
+    start: number;
+    publicReady: number;
+  };
+  conversion: {
+    createFromConnectPct: number;
+    startFromCreatePct: number;
+    publicReadyFromStartPct: number;
+  };
+};
+
 type VersionCatalog = {
   vanilla: Array<{ id: string; stable: boolean }>;
   paper: Array<{ id: string; stable: boolean }>;
@@ -216,6 +253,24 @@ type EditableFileEntry = {
   sizeBytes: number;
   updatedAt: string | null;
   exists: boolean;
+};
+
+type ServerPropertiesFormValues = {
+  motd: string;
+  maxPlayers: number;
+  difficulty: "peaceful" | "easy" | "normal" | "hard";
+  gameMode: "survival" | "creative" | "adventure" | "spectator";
+  pvp: boolean;
+  whitelist: boolean;
+  onlineMode: boolean;
+  viewDistance: number;
+  simulationDistance: number;
+};
+
+type ServerPropertiesSnapshot = {
+  id: string;
+  createdAt: string;
+  content: string;
 };
 
 type AppView = "overview" | "setup" | "manage" | "content" | "advanced";
@@ -316,6 +371,138 @@ const fallbackSetupPresets: SetupPreset[] = [
   }
 ];
 
+const defaultServerProperties: ServerPropertiesFormValues = {
+  motd: "SimpleServers",
+  maxPlayers: 20,
+  difficulty: "normal",
+  gameMode: "survival",
+  pvp: true,
+  whitelist: false,
+  onlineMode: true,
+  viewDistance: 10,
+  simulationDistance: 10
+};
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  return fallback;
+}
+
+function parseNumber(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseServerProperties(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      continue;
+    }
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1);
+    result[key] = value;
+  }
+  return result;
+}
+
+function deriveServerPropertiesForm(content: string): ServerPropertiesFormValues {
+  const values = parseServerProperties(content);
+  const difficulty = values["difficulty"];
+  const gameMode = values["gamemode"];
+  const normalizedDifficulty: ServerPropertiesFormValues["difficulty"] =
+    difficulty === "peaceful" || difficulty === "easy" || difficulty === "normal" || difficulty === "hard"
+      ? difficulty
+      : defaultServerProperties.difficulty;
+  const normalizedGameMode: ServerPropertiesFormValues["gameMode"] =
+    gameMode === "survival" || gameMode === "creative" || gameMode === "adventure" || gameMode === "spectator"
+      ? gameMode
+      : defaultServerProperties.gameMode;
+  return {
+    motd: values["motd"] ?? defaultServerProperties.motd,
+    maxPlayers: parseNumber(values["max-players"], defaultServerProperties.maxPlayers),
+    difficulty: normalizedDifficulty,
+    gameMode: normalizedGameMode,
+    pvp: parseBoolean(values["pvp"], defaultServerProperties.pvp),
+    whitelist: parseBoolean(values["white-list"], defaultServerProperties.whitelist),
+    onlineMode: parseBoolean(values["online-mode"], defaultServerProperties.onlineMode),
+    viewDistance: parseNumber(values["view-distance"], defaultServerProperties.viewDistance),
+    simulationDistance: parseNumber(values["simulation-distance"], defaultServerProperties.simulationDistance)
+  };
+}
+
+function applyServerPropertiesForm(currentContent: string, form: ServerPropertiesFormValues): string {
+  const replacements = new Map<string, string>([
+    ["motd", form.motd],
+    ["max-players", String(form.maxPlayers)],
+    ["difficulty", form.difficulty],
+    ["gamemode", form.gameMode],
+    ["pvp", String(form.pvp)],
+    ["white-list", String(form.whitelist)],
+    ["online-mode", String(form.onlineMode)],
+    ["view-distance", String(form.viewDistance)],
+    ["simulation-distance", String(form.simulationDistance)]
+  ]);
+
+  const lines = currentContent.split(/\r?\n/);
+  const touched = new Set<string>();
+  const nextLines = lines.map((line) => {
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      return line;
+    }
+    const key = line.slice(0, separator).trim();
+    const replacement = replacements.get(key);
+    if (replacement === undefined) {
+      return line;
+    }
+    touched.add(key);
+    return `${key}=${replacement}`;
+  });
+
+  for (const [key, value] of replacements.entries()) {
+    if (!touched.has(key)) {
+      nextLines.push(`${key}=${value}`);
+    }
+  }
+
+  return nextLines.join("\n").trimEnd() + "\n";
+}
+
+function validateServerProperties(form: ServerPropertiesFormValues): string[] {
+  const issues: string[] = [];
+  if (!form.motd.trim()) {
+    issues.push("MOTD cannot be empty.");
+  }
+  if (form.maxPlayers < 1 || form.maxPlayers > 500) {
+    issues.push("Max players must be between 1 and 500.");
+  }
+  if (form.viewDistance < 2 || form.viewDistance > 32) {
+    issues.push("View distance must be between 2 and 32.");
+  }
+  if (form.simulationDistance < 2 || form.simulationDistance > 32) {
+    issues.push("Simulation distance must be between 2 and 32.");
+  }
+  return issues;
+}
+
 export default function App() {
   const [apiBase, setApiBase] = useState(defaultApiBase);
   const [token, setToken] = useState("simpleservers-dev-admin-token");
@@ -337,13 +524,17 @@ export default function App() {
   const [preflight, setPreflight] = useState<PreflightReport | null>(null);
   const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
   const [quickHostingStatus, setQuickHostingStatus] = useState<QuickHostingStatus | null>(null);
+  const [quickHostingDiagnostics, setQuickHostingDiagnostics] = useState<QuickHostingDiagnostics | null>(null);
+  const [quickHostRetryCountdown, setQuickHostRetryCountdown] = useState<number | null>(null);
   const [remoteState, setRemoteState] = useState<RemoteState | null>(null);
   const [javaChannels, setJavaChannels] = useState<JavaChannel[]>([]);
   const [audit, setAudit] = useState<Audit[]>([]);
+  const [funnelMetrics, setFunnelMetrics] = useState<TelemetryFunnel | null>(null);
   const [status, setStatus] = useState<{ servers: { total: number; running: number; crashed: number }; alerts: { open: number; total: number } } | null>(null);
   const [catalog, setCatalog] = useState<VersionCatalog>({ vanilla: [], paper: [], fabric: [] });
   const [setupPresets, setSetupPresets] = useState<SetupPreset[]>(fallbackSetupPresets);
   const [hardware, setHardware] = useState<HardwareProfile | null>(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Array<{ ts: string; line: string }>>([]);
@@ -387,6 +578,14 @@ export default function App() {
   const [filePath, setFilePath] = useState("server.properties");
   const [fileContent, setFileContent] = useState("");
   const [fileOriginal, setFileOriginal] = useState("");
+  const [serverPropertiesRaw, setServerPropertiesRaw] = useState("");
+  const [serverPropertiesForm, setServerPropertiesForm] = useState<ServerPropertiesFormValues>(defaultServerProperties);
+  const [serverPropertiesHistory, setServerPropertiesHistory] = useState<Record<string, ServerPropertiesSnapshot[]>>({});
+  const [loadingServerProperties, setLoadingServerProperties] = useState(false);
+  const [savingServerProperties, setSavingServerProperties] = useState(false);
+  const [serverPropertiesIssues, setServerPropertiesIssues] = useState<string[]>([]);
+  const [repairingCore, setRepairingCore] = useState(false);
+  const [downloadingSupportBundle, setDownloadingSupportBundle] = useState(false);
   const [editorFiles, setEditorFiles] = useState<EditableFileEntry[]>([]);
   const [editorSearch, setEditorSearch] = useState("");
   const [loadingEditorFile, setLoadingEditorFile] = useState(false);
@@ -423,9 +622,35 @@ export default function App() {
   const logReconnectTimerRef = useRef<number | null>(null);
   const logStreamServerRef = useRef<string | null>(null);
   const manualLogDisconnectRef = useRef(false);
+  const telemetrySessionIdRef = useRef(
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `session-${Math.random().toString(36).slice(2, 10)}`
+  );
+  const telemetryKeysRef = useRef(new Set<string>());
 
   function setClientAuth(): void {
     api.current.setAuth(apiBase, token);
+  }
+
+  function markTelemetryKey(key: string): boolean {
+    if (telemetryKeysRef.current.has(key)) {
+      return false;
+    }
+    telemetryKeysRef.current.add(key);
+    return true;
+  }
+
+  async function trackTelemetryEvent(event: string, metadata?: Record<string, unknown>): Promise<void> {
+    try {
+      await api.current.post("/telemetry/events", {
+        sessionId: telemetrySessionIdRef.current,
+        event,
+        metadata: metadata ?? {}
+      });
+    } catch {
+      // telemetry should never block UX
+    }
   }
 
   function computeDiff(current: string, next: string): string[] {
@@ -564,6 +789,11 @@ export default function App() {
       setConnected(true);
       setError(null);
       await refreshAll();
+      if (markTelemetryKey("ui.connect.success")) {
+        void trackTelemetryEvent("ui.connect.success", {
+          role: me.user.role ?? "unknown"
+        });
+      }
     } catch (e) {
       setConnected(false);
       setViewer(null);
@@ -626,6 +856,7 @@ export default function App() {
         setPreflight(null);
         setCrashReports([]);
         setQuickHostingStatus(null);
+        setQuickHostingDiagnostics(null);
         setEditorFiles([]);
         setFilePath("server.properties");
         setFileContent("");
@@ -666,12 +897,13 @@ export default function App() {
 
   async function refreshServerOperations(serverId: string): Promise<void> {
     try {
-      const [backupsRes, policyRes, preflightRes, crashRes, quickHostRes] = await Promise.all([
+      const [backupsRes, policyRes, preflightRes, crashRes, quickHostRes, quickHostDiagnosticsRes] = await Promise.all([
         api.current.get<{ backups: BackupRecord[] }>(`/servers/${serverId}/backups`),
         api.current.get<{ policy: BackupPolicy }>(`/servers/${serverId}/backup-policy`),
         api.current.get<{ report: PreflightReport }>(`/servers/${serverId}/preflight`),
         api.current.get<{ reports: CrashReport[] }>(`/servers/${serverId}/crash-reports`),
-        api.current.get<QuickHostingStatus>(`/servers/${serverId}/public-hosting/status`)
+        api.current.get<QuickHostingStatus>(`/servers/${serverId}/public-hosting/status`),
+        api.current.get<QuickHostingDiagnostics>(`/servers/${serverId}/public-hosting/diagnostics`)
       ]);
 
       setBackups(backupsRes.backups);
@@ -679,6 +911,7 @@ export default function App() {
       setPreflight(preflightRes.report);
       setCrashReports(crashRes.reports);
       setQuickHostingStatus(quickHostRes);
+      setQuickHostingDiagnostics(quickHostDiagnosticsRes);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -686,15 +919,17 @@ export default function App() {
 
   async function refreshAdminData(): Promise<void> {
     try {
-      const [usersRes, remoteRes, javaRes] = await Promise.all([
+      const [usersRes, remoteRes, javaRes, funnelRes] = await Promise.all([
         api.current.get<{ users: UserRecord[] }>("/users"),
         api.current.get<{ remote: RemoteState }>("/remote/status"),
-        api.current.get<{ channels: JavaChannel[] }>("/system/java/channels")
+        api.current.get<{ channels: JavaChannel[] }>("/system/java/channels"),
+        api.current.get<TelemetryFunnel>("/telemetry/funnel?hours=168")
       ]);
 
       setUsers(usersRes.users);
       setRemoteState(remoteRes.remote);
       setJavaChannels(javaRes.channels);
+      setFunnelMetrics(funnelRes);
 
       setRotateTokenForm((previous) => ({
         ...previous,
@@ -708,6 +943,7 @@ export default function App() {
       });
     } catch {
       // non-owner users may not have access to these endpoints
+      setFunnelMetrics(null);
     }
   }
 
@@ -820,6 +1056,17 @@ export default function App() {
   }, [connected, selectedServerId]);
 
   useEffect(() => {
+    if (!connected || !selectedServerId) {
+      setServerPropertiesRaw("");
+      setServerPropertiesForm(defaultServerProperties);
+      setServerPropertiesIssues([]);
+      return;
+    }
+
+    void loadServerPropertiesForm(selectedServerId);
+  }, [connected, selectedServerId]);
+
+  useEffect(() => {
     setHasSearchedContent(false);
     setContentResults([]);
   }, [selectedServerId]);
@@ -834,6 +1081,45 @@ export default function App() {
     connectLogStream(selectedServerId);
     return () => disconnectLogStream({ manual: true });
   }, [connected, selectedServerId, liveConsole, apiBase, token]);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("simpleservers.onboarding.dismissed");
+    setOnboardingDismissed(stored === "1");
+  }, []);
+
+  useEffect(() => {
+    if (!selectedServerId || !quickHostingStatus?.publicAddress) {
+      return;
+    }
+    const key = `hosting.public.ready:${selectedServerId}:${quickHostingStatus.publicAddress}`;
+    if (!markTelemetryKey(key)) {
+      return;
+    }
+    void trackTelemetryEvent("hosting.public.ready", {
+      serverId: selectedServerId,
+      publicAddress: quickHostingStatus.publicAddress
+    });
+  }, [selectedServerId, quickHostingStatus?.publicAddress]);
+
+  useEffect(() => {
+    const retrySeconds = quickHostingDiagnostics?.diagnostics?.retry.nextAttemptInSeconds ?? null;
+    if (retrySeconds === null || retrySeconds < 0) {
+      setQuickHostRetryCountdown(null);
+      return;
+    }
+
+    setQuickHostRetryCountdown(retrySeconds);
+    const timer = window.setInterval(() => {
+      setQuickHostRetryCountdown((previous) => {
+        if (previous === null) {
+          return null;
+        }
+        return previous > 0 ? previous - 1 : 0;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [quickHostingDiagnostics?.diagnostics?.retry.nextAttemptAt, quickHostingDiagnostics?.diagnostics?.retry.nextAttemptInSeconds]);
 
   const versionOptions = useMemo(() => {
     return catalog[createServer.type].map((v) => v.id);
@@ -949,6 +1235,32 @@ export default function App() {
     ];
   }, [activePreset.label, activePreset.description, createServer.quickPublicHosting]);
 
+  const startupWizardSteps = useMemo(() => {
+    const hasServer = servers.length > 0;
+    const running = isServerRunning(selectedServerStatus);
+    const hasPublicAddress = Boolean(quickHostingStatus?.publicAddress);
+    return [
+      {
+        id: "create",
+        title: "Create server",
+        done: hasServer,
+        detail: hasServer ? "Server created." : "Use Instant Launch to create a server."
+      },
+      {
+        id: "start",
+        title: "Start server",
+        done: running,
+        detail: running ? "Server is online." : "Start the selected server."
+      },
+      {
+        id: "publish",
+        title: "Publish address",
+        done: hasPublicAddress,
+        detail: hasPublicAddress ? "Public address is ready to share." : "Enable quick hosting and wait for endpoint assignment."
+      }
+    ];
+  }, [servers.length, selectedServerStatus, quickHostingStatus?.publicAddress]);
+
   const logStreamBadge = useMemo(() => {
     if (!liveConsole) {
       return { label: "Off", tone: "neutral" as const };
@@ -987,8 +1299,22 @@ export default function App() {
     if (createServer.allowCracked) {
       tips.push("Non-premium mode is enabled. Use only with trusted players to avoid account spoofing risk.");
     }
+    if (quickHostingDiagnostics?.diagnostics?.message) {
+      tips.push(`Tunnel diagnostics: ${quickHostingDiagnostics.diagnostics.message}`);
+    }
     return tips;
-  }, [quickHostPending, selectedServerStatus, preflight, createServer.allowCracked]);
+  }, [quickHostPending, selectedServerStatus, preflight, createServer.allowCracked, quickHostingDiagnostics?.diagnostics?.message]);
+
+  const hasRepairablePreflightIssue = useMemo(() => {
+    return Boolean(preflight?.issues.some((issue) => issue.code === "missing_eula" || issue.code === "missing_server_jar"));
+  }, [preflight?.issues]);
+
+  const serverPropertySnapshots = useMemo(() => {
+    if (!selectedServerId) {
+      return [] as ServerPropertiesSnapshot[];
+    }
+    return serverPropertiesHistory[selectedServerId] ?? [];
+  }, [selectedServerId, serverPropertiesHistory]);
 
   useEffect(() => {
     if (!connected || !selectedServerId || !quickHostPending) {
@@ -1091,6 +1417,13 @@ export default function App() {
       }
       if (createdServerId) {
         setSelectedServerId(createdServerId);
+        if (markTelemetryKey(`server.create.success:${createdServerId}`)) {
+          void trackTelemetryEvent("server.create.success", {
+            serverId: createdServerId,
+            preset: createServer.preset,
+            flow: "guided_setup"
+          });
+        }
       }
       await refreshAll();
       setNotice("Server provisioned successfully.");
@@ -1116,6 +1449,19 @@ export default function App() {
       if (response.server?.id) {
         setSelectedServerId(response.server.id);
         await refreshServerOperations(response.server.id);
+        if (markTelemetryKey(`server.create.success:${response.server.id}`)) {
+          void trackTelemetryEvent("server.create.success", {
+            serverId: response.server.id,
+            preset: createServer.preset,
+            flow: "instant_launch"
+          });
+        }
+        if (response.started && markTelemetryKey(`server.start.success:${response.server.id}`)) {
+          void trackTelemetryEvent("server.start.success", {
+            serverId: response.server.id,
+            flow: "instant_launch"
+          });
+        }
       }
       await refreshAll();
 
@@ -1154,6 +1500,12 @@ export default function App() {
         setPreflight(result.preflight ?? null);
         setError("Start blocked by preflight checks. Resolve critical issues and retry.");
       }
+      if ((action === "start" || action === "restart") && result.ok && !result.blocked && markTelemetryKey(`server.start.success:${serverId}`)) {
+        void trackTelemetryEvent("server.start.success", {
+          serverId,
+          action
+        });
+      }
       await refreshAll();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1191,6 +1543,10 @@ export default function App() {
       setFileContent(response.content);
       setFileOriginal(response.content);
       setFilePath(response.path);
+      if (response.path === "server.properties") {
+        setServerPropertiesRaw(response.content);
+        setServerPropertiesForm(deriveServerPropertiesForm(response.content));
+      }
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1256,6 +1612,10 @@ export default function App() {
       setSavingEditorFile(true);
       await api.current.put(`/servers/${selectedServerId}/editor/file`, { path: filePath, content: fileContent });
       setFileOriginal(fileContent);
+      if (filePath === "server.properties") {
+        setServerPropertiesRaw(fileContent);
+        setServerPropertiesForm(deriveServerPropertiesForm(fileContent));
+      }
       await refreshEditorFiles(selectedServerId);
       setNotice(`Saved ${filePath}.`);
       setError(null);
@@ -1265,6 +1625,176 @@ export default function App() {
     } finally {
       setSavingEditorFile(false);
     }
+  }
+
+  async function loadServerPropertiesForm(serverId: string): Promise<void> {
+    try {
+      setLoadingServerProperties(true);
+      const query = new URLSearchParams({ path: "server.properties" });
+      const response = await api.current.get<{ path: string; content: string }>(`/servers/${serverId}/editor/file?${query.toString()}`);
+      const content = response.content ?? "";
+      setServerPropertiesRaw(content);
+      setServerPropertiesForm(deriveServerPropertiesForm(content));
+      setServerPropertiesIssues([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingServerProperties(false);
+    }
+  }
+
+  async function saveServerPropertiesForm(): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    const issues = validateServerProperties(serverPropertiesForm);
+    setServerPropertiesIssues(issues);
+    if (issues.length > 0) {
+      return;
+    }
+
+    const nextContent = applyServerPropertiesForm(serverPropertiesRaw, serverPropertiesForm);
+    try {
+      setSavingServerProperties(true);
+      await api.current.put(`/servers/${selectedServerId}/editor/file`, {
+        path: "server.properties",
+        content: nextContent
+      });
+
+      const snapshot: ServerPropertiesSnapshot = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+        content: serverPropertiesRaw
+      };
+      setServerPropertiesHistory((previous) => {
+        const existing = previous[selectedServerId] ?? [];
+        return {
+          ...previous,
+          [selectedServerId]: [snapshot, ...existing].slice(0, 20)
+        };
+      });
+
+      setServerPropertiesRaw(nextContent);
+      if (filePath === "server.properties") {
+        setFileContent(nextContent);
+        setFileOriginal(nextContent);
+      }
+
+      setNotice("Saved server.properties from the guided form.");
+      setError(null);
+      await refreshEditorFiles(selectedServerId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingServerProperties(false);
+    }
+  }
+
+  async function restoreServerPropertiesSnapshot(snapshot: ServerPropertiesSnapshot): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+    const confirmed = window.confirm("Restore this saved snapshot to server.properties?");
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setSavingServerProperties(true);
+      await api.current.put(`/servers/${selectedServerId}/editor/file`, {
+        path: "server.properties",
+        content: snapshot.content
+      });
+      setServerPropertiesRaw(snapshot.content);
+      setServerPropertiesForm(deriveServerPropertiesForm(snapshot.content));
+      setServerPropertiesHistory((previous) => ({
+        ...previous,
+        [selectedServerId]: (previous[selectedServerId] ?? []).filter((entry) => entry.id !== snapshot.id)
+      }));
+      if (filePath === "server.properties") {
+        setFileContent(snapshot.content);
+        setFileOriginal(snapshot.content);
+      }
+      setNotice("Restored server.properties snapshot.");
+      setError(null);
+      await refreshEditorFiles(selectedServerId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingServerProperties(false);
+    }
+  }
+
+  async function repairCoreStartupFiles(): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    try {
+      setRepairingCore(true);
+      const response = await api.current.post<{ repaired: string[]; preflight: PreflightReport }>(
+        `/servers/${selectedServerId}/preflight/repair-core`,
+        {}
+      );
+      setPreflight(response.preflight);
+      if (response.repaired.length === 0) {
+        setNotice("Core startup files were already present.");
+      } else {
+        setNotice(`Repaired startup files: ${response.repaired.join(", ")}.`);
+      }
+      setError(null);
+      await refreshAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRepairingCore(false);
+    }
+  }
+
+  async function downloadSupportBundle(): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    try {
+      setDownloadingSupportBundle(true);
+      const response = await fetch(`${apiBase}/servers/${selectedServerId}/support-bundle`, {
+        headers: {
+          "x-api-token": token
+        }
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Failed to create support bundle");
+      }
+      const payload = await response.json();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `simpleservers-support-${selectedServerId}-${Date.now()}.json`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setNotice("Support bundle downloaded.");
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDownloadingSupportBundle(false);
+    }
+  }
+
+  function dismissOnboarding(): void {
+    setOnboardingDismissed(true);
+    window.localStorage.setItem("simpleservers.onboarding.dismissed", "1");
+  }
+
+  function resetOnboarding(): void {
+    setOnboardingDismissed(false);
+    window.localStorage.removeItem("simpleservers.onboarding.dismissed");
   }
 
   async function deleteServer(server: Server): Promise<void> {
@@ -1627,6 +2157,54 @@ export default function App() {
             </article>
           </section>
 
+          {!onboardingDismissed ? (
+            <section className="panel">
+              <h2>Startup Wizard</h2>
+              <p className="muted-note">For first-time hosting: follow these three steps and share your multiplayer address.</p>
+              <ul className="list">
+                {startupWizardSteps.map((step) => (
+                  <li key={step.id}>
+                    <div>
+                      <strong>{step.title}</strong>
+                      <span>{step.detail}</span>
+                    </div>
+                    <span className={`status-pill ${step.done ? "tone-ok" : "tone-warn"}`}>{step.done ? "Done" : "Pending"}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="inline-actions">
+                {servers.length === 0 ? (
+                  <button onClick={() => void quickStartNow()} disabled={busy} type="button">
+                    {busy ? "Working..." : "Create Server"}
+                  </button>
+                ) : selectedServerId && !isServerRunning(selectedServerStatus) ? (
+                  <button onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart} type="button">
+                    Start Server
+                  </button>
+                ) : selectedServerId && !quickHostingStatus?.publicAddress ? (
+                  <button onClick={() => void enableQuickHosting()} type="button">
+                    Enable Public Hosting
+                  </button>
+                ) : quickHostingStatus?.publicAddress ? (
+                  <button onClick={() => copyAddress(quickHostingStatus.publicAddress ?? "")} type="button">
+                    Copy Public Address
+                  </button>
+                ) : null}
+                <button type="button" onClick={dismissOnboarding}>
+                  Hide Wizard
+                </button>
+              </div>
+            </section>
+          ) : (
+            <section className="panel">
+              <h2>Startup Wizard</h2>
+              <p className="muted-note">Wizard hidden. Re-enable if you want the beginner flow back.</p>
+              <button type="button" onClick={resetOnboarding}>
+                Show Wizard Again
+              </button>
+            </section>
+          )}
+
           <section className="dual-grid">
             <article className="panel">
               <h2>Fast Launch</h2>
@@ -1661,6 +2239,9 @@ export default function App() {
                 ) : null}
                 {quickHostPending ? (
                   <p className="muted-note">Public tunnel is still provisioning. Keep this page open or hit Refresh in a few seconds.</p>
+                ) : null}
+                {quickHostPending && quickHostRetryCountdown !== null ? (
+                  <p className="muted-note">Auto-retry in {quickHostRetryCountdown}s.</p>
                 ) : null}
                 <div className="inline-actions">
                   {selectedServerId ? (
@@ -1732,6 +2313,44 @@ export default function App() {
               ))}
             </ul>
           </section>
+
+          {funnelMetrics ? (
+            <section className="panel">
+              <h2>Onboarding Funnel</h2>
+              <p className="muted-note">Last {funnelMetrics.windowHours}h across {funnelMetrics.sessionsObserved} observed sessions.</p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Stage</th>
+                    <th>Sessions</th>
+                    <th>Conversion</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Connected</td>
+                    <td>{funnelMetrics.stageTotals.connect}</td>
+                    <td>-</td>
+                  </tr>
+                  <tr>
+                    <td>Created Server</td>
+                    <td>{funnelMetrics.stageTotals.create}</td>
+                    <td>{funnelMetrics.conversion.createFromConnectPct}%</td>
+                  </tr>
+                  <tr>
+                    <td>Started Server</td>
+                    <td>{funnelMetrics.stageTotals.start}</td>
+                    <td>{funnelMetrics.conversion.startFromCreatePct}%</td>
+                  </tr>
+                  <tr>
+                    <td>Public Address Ready</td>
+                    <td>{funnelMetrics.stageTotals.publicReady}</td>
+                    <td>{funnelMetrics.conversion.publicReadyFromStartPct}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+          ) : null}
 
           <section className="panel">
             <h2>Server Fleet</h2>
@@ -2074,6 +2693,62 @@ export default function App() {
                 {quickHostPending ? (
                   <p className="muted-note">Tunnel is pending. It can take a short time for providers like Playit to assign a public endpoint.</p>
                 ) : null}
+                {quickHostingDiagnostics?.diagnostics ? (
+                  <div className="diagnostics-box">
+                    <h3>Tunnel Diagnostics</h3>
+                    <ul className="list list-compact">
+                      <li>
+                        <div>
+                          <strong>Dependency</strong>
+                          <span>
+                            Command <code>{quickHostingDiagnostics.diagnostics.command}</code>{" "}
+                            {quickHostingDiagnostics.diagnostics.commandAvailable ? "is available." : "is missing."}
+                          </span>
+                        </div>
+                        <span className={`status-pill ${quickHostingDiagnostics.diagnostics.commandAvailable ? "tone-ok" : "tone-error"}`}>
+                          {quickHostingDiagnostics.diagnostics.commandAvailable ? "Ready" : "Missing"}
+                        </span>
+                      </li>
+                      {quickHostingDiagnostics.diagnostics.authConfigured !== null ? (
+                        <li>
+                          <div>
+                            <strong>Playit Auth</strong>
+                            <span>{quickHostingDiagnostics.diagnostics.authConfigured ? "Agent secret found." : "Agent secret not configured yet."}</span>
+                          </div>
+                          <span className={`status-pill ${quickHostingDiagnostics.diagnostics.authConfigured ? "tone-ok" : "tone-warn"}`}>
+                            {quickHostingDiagnostics.diagnostics.authConfigured ? "Ready" : "Pending"}
+                          </span>
+                        </li>
+                      ) : null}
+                      <li>
+                        <div>
+                          <strong>Endpoint</strong>
+                          <span>
+                            {quickHostingDiagnostics.diagnostics.endpointAssigned
+                              ? quickHostingDiagnostics.diagnostics.endpoint
+                              : "Waiting for tunnel endpoint assignment."}
+                          </span>
+                        </div>
+                        <span className={`status-pill ${quickHostingDiagnostics.diagnostics.endpointAssigned ? "tone-ok" : "tone-warn"}`}>
+                          {quickHostingDiagnostics.diagnostics.endpointAssigned ? "Assigned" : "Pending"}
+                        </span>
+                      </li>
+                    </ul>
+                    {quickHostingDiagnostics.diagnostics.message ? (
+                      <p className="muted-note">{quickHostingDiagnostics.diagnostics.message}</p>
+                    ) : null}
+                    {(quickHostingDiagnostics.actions ?? []).length > 0 ? (
+                      <ul className="tip-list">
+                        {quickHostingDiagnostics.actions.map((action) => (
+                          <li key={action}>{action}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {quickHostPending && quickHostRetryCountdown !== null ? (
+                      <p className="muted-note">Auto-retry in {quickHostRetryCountdown}s.</p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <ul className="list">
                   {(quickHostingStatus?.steps ?? ["Enable quick hosting to publish your server without router setup."]).map((step) => (
                     <li key={step}>
@@ -2106,6 +2781,21 @@ export default function App() {
               {selectedServerId ? (
                 <button type="button" onClick={() => void refreshServerOperations(selectedServerId)}>
                   Refresh Server Diagnostics
+                </button>
+              ) : null}
+              {selectedServerId && hasRepairablePreflightIssue ? (
+                <button type="button" onClick={() => void repairCoreStartupFiles()} disabled={repairingCore}>
+                  {repairingCore ? "Repairing..." : "Repair Core Startup Files"}
+                </button>
+              ) : null}
+              {selectedServerId ? (
+                <button type="button" onClick={() => void downloadSupportBundle()} disabled={downloadingSupportBundle}>
+                  {downloadingSupportBundle ? "Preparing Bundle..." : "Export Support Bundle"}
+                </button>
+              ) : null}
+              {selectedServerId && selectedServerStatus !== "running" ? (
+                <button type="button" onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart}>
+                  Start Server
                 </button>
               ) : null}
             </div>
@@ -2252,6 +2942,176 @@ export default function App() {
             </article>
           </section>
 
+          <section className="panel">
+            <h2>Simple Config Editor</h2>
+            <p className="muted-note">Edit common `server.properties` settings with guided controls. Raw file editing is still available in Advanced.</p>
+            {selectedServerId ? (
+              <>
+                <div className="grid-form">
+                  <label>
+                    Server Name (MOTD)
+                    <input
+                      value={serverPropertiesForm.motd}
+                      onChange={(event) => setServerPropertiesForm((previous) => ({ ...previous, motd: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Max Players
+                    <input
+                      type="number"
+                      value={serverPropertiesForm.maxPlayers}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          maxPlayers: Number(event.target.value)
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Difficulty
+                    <select
+                      value={serverPropertiesForm.difficulty}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          difficulty: event.target.value as ServerPropertiesFormValues["difficulty"]
+                        }))
+                      }
+                    >
+                      <option value="peaceful">peaceful</option>
+                      <option value="easy">easy</option>
+                      <option value="normal">normal</option>
+                      <option value="hard">hard</option>
+                    </select>
+                  </label>
+                  <label>
+                    Default Gamemode
+                    <select
+                      value={serverPropertiesForm.gameMode}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          gameMode: event.target.value as ServerPropertiesFormValues["gameMode"]
+                        }))
+                      }
+                    >
+                      <option value="survival">survival</option>
+                      <option value="creative">creative</option>
+                      <option value="adventure">adventure</option>
+                      <option value="spectator">spectator</option>
+                    </select>
+                  </label>
+                  <label>
+                    View Distance
+                    <input
+                      type="number"
+                      value={serverPropertiesForm.viewDistance}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          viewDistance: Number(event.target.value)
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Simulation Distance
+                    <input
+                      type="number"
+                      value={serverPropertiesForm.simulationDistance}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          simulationDistance: Number(event.target.value)
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={serverPropertiesForm.onlineMode}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          onlineMode: event.target.checked
+                        }))
+                      }
+                    />
+                    Require premium accounts (`online-mode`)
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={serverPropertiesForm.whitelist}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          whitelist: event.target.checked
+                        }))
+                      }
+                    />
+                    Whitelist only
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={serverPropertiesForm.pvp}
+                      onChange={(event) =>
+                        setServerPropertiesForm((previous) => ({
+                          ...previous,
+                          pvp: event.target.checked
+                        }))
+                      }
+                    />
+                    Enable PVP combat
+                  </label>
+                </div>
+                {serverPropertiesIssues.length > 0 ? (
+                  <ul className="tip-list">
+                    {serverPropertiesIssues.map((issue) => (
+                      <li key={issue}>{issue}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="inline-actions">
+                  <button type="button" onClick={() => void saveServerPropertiesForm()} disabled={savingServerProperties || loadingServerProperties}>
+                    {savingServerProperties ? "Saving..." : "Save server.properties"}
+                  </button>
+                  <button type="button" onClick={() => void loadServerPropertiesForm(selectedServerId)} disabled={loadingServerProperties}>
+                    {loadingServerProperties ? "Loading..." : "Reload File"}
+                  </button>
+                </div>
+                <h3>Saved Snapshots</h3>
+                <ul className="list">
+                  {serverPropertySnapshots.length === 0 ? (
+                    <li>
+                      <div>
+                        <strong>No saved snapshots yet</strong>
+                        <span>Every successful form save stores the previous file so you can roll back quickly.</span>
+                      </div>
+                    </li>
+                  ) : (
+                    serverPropertySnapshots.map((snapshot) => (
+                      <li key={snapshot.id}>
+                        <div>
+                          <strong>{new Date(snapshot.createdAt).toLocaleString()}</strong>
+                          <span>Previous server.properties state</span>
+                        </div>
+                        <button type="button" onClick={() => void restoreServerPropertiesSnapshot(snapshot)} disabled={savingServerProperties}>
+                          Restore Snapshot
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </>
+            ) : (
+              <p>Select a server to edit guided config settings.</p>
+            )}
+          </section>
+
           <section className="dual-grid">
             <article className="panel">
               <h2>Automation</h2>
@@ -2317,6 +3177,27 @@ export default function App() {
 
             <article className="panel">
               <h2>Crash Reports</h2>
+              <div className="recovery-box">
+                <h3>Recovery Assistant</h3>
+                <p className="muted-note">If startup fails, run these quick fixes before digging through raw logs.</p>
+                <div className="inline-actions">
+                  {selectedServerId ? (
+                    <button type="button" onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart}>
+                      Retry Start
+                    </button>
+                  ) : null}
+                  {selectedServerId && hasRepairablePreflightIssue ? (
+                    <button type="button" onClick={() => void repairCoreStartupFiles()} disabled={repairingCore}>
+                      {repairingCore ? "Repairing..." : "Repair Missing Core Files"}
+                    </button>
+                  ) : null}
+                  {selectedServerId ? (
+                    <button type="button" onClick={() => void downloadSupportBundle()} disabled={downloadingSupportBundle}>
+                      {downloadingSupportBundle ? "Preparing Bundle..." : "Export Logs Bundle"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
               <ul className="list">
                 {crashReports.length === 0 ? (
                   <li>
