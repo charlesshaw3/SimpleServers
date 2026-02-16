@@ -36,6 +36,7 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - `server_packages`: installed mods/plugins/modpacks/resourcepacks.
 - `crash_reports`: structured crash bundle references.
 - `ux_telemetry_events`: local dashboard funnel telemetry for UX conversion analysis.
+- `editor_file_snapshots`: API-backed rollback history for in-app config editing.
 
 ## Runtime Flows
 
@@ -57,6 +58,7 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - Missing core files and plugin/mod conflicts can block startup.
 - Warning-level issues emit alerts without hard block.
 - Repair helpers can restore missing core startup files (`server.jar`, `eula.txt`, `server.properties`) while server is stopped.
+- Safe restart flow (`/servers/:id/safe-restart`) enforces stop -> preflight -> start to reduce recovery mistakes.
 
 4. Backups and restore
 
@@ -81,6 +83,12 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - Support bundles are generated on demand from API (`/servers/:id/support-bundle`).
 - Bundle payload includes server metadata, preflight state, recent logs, tunnel state, and crash report references.
 - Intended for quick escalation/triage without shell access to local data directories.
+
+8. Goal-first hosting flow
+
+- `Go Live` API (`/servers/:id/go-live`) combines lifecycle start + quick-host activation for one-click publishing.
+- Tunnel diagnostics expose fix metadata (`fixes`) for one-click recovery actions in the dashboard.
+- Crash Doctor UI runbook chains core-file repair, config snapshot rollback, and safe restart actions.
 
 ## Provider Integrations
 

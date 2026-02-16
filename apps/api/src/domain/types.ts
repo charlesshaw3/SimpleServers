@@ -142,3 +142,12 @@ export type UxTelemetryEventRecord = {
   metadata: string;
   createdAt: string;
 };
+
+export type EditorFileSnapshotRecord = {
+  id: string;
+  serverId: string;
+  path: string;
+  content: string;
+  reason: string;
+  createdAt: string;
+};

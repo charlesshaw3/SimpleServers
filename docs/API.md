@@ -45,6 +45,8 @@ Base URL: `http://127.0.0.1:4010`
 - `POST /servers/:id/start` (`moderator`)
 - `POST /servers/:id/stop` (`moderator`)
 - `POST /servers/:id/restart` (`moderator`)
+- `POST /servers/:id/safe-restart` (`admin`, stop -> preflight -> start)
+- `POST /servers/:id/go-live` (`admin`, one-call start + quick-host tunnel activation)
 - `POST /servers/:id/command` (`moderator`)
 - `GET /servers/:id/logs`
 - `GET /servers/:id/preflight`
@@ -65,6 +67,8 @@ Base URL: `http://127.0.0.1:4010`
 - `GET /servers/:id/editor/files` (indexed editable text files)
 - `GET /servers/:id/editor/file?path=<relativePath>`
 - `PUT /servers/:id/editor/file` (`admin`)
+- `GET /servers/:id/editor/file/snapshots?path=<relativePath>&limit=<1-100>`
+- `POST /servers/:id/editor/file/rollback` (`admin`, restore latest or specific snapshot)
 - `POST /servers/:id/editor/file/diff`
 
 Legacy file-specific routes are still supported:
@@ -105,7 +109,7 @@ Notes:
 
 - Playit-backed tunnels now synchronize assigned public host/port from Playit run data.
 - `publicAddress` remains `null` while Playit is still assigning an endpoint (`pending`/`starting` states).
-- diagnostics include command availability, auth status, endpoint assignment state, and retry timing metadata.
+- diagnostics include command availability, auth status, endpoint assignment state, retry timing metadata, and `fixes` action metadata for one-click UI recovery.
 
 ## Tasks
 

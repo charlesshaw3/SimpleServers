@@ -159,5 +159,18 @@ export function migrate(): void {
 
     CREATE INDEX IF NOT EXISTS idx_ux_telemetry_created_at ON ux_telemetry_events(created_at);
     CREATE INDEX IF NOT EXISTS idx_ux_telemetry_event ON ux_telemetry_events(event);
+
+    CREATE TABLE IF NOT EXISTS editor_file_snapshots (
+      id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      content TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_editor_file_snapshots_server_path_created
+      ON editor_file_snapshots(server_id, path, created_at DESC);
   `);
 }

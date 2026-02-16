@@ -321,6 +321,63 @@ describe("api integration", () => {
     expect(response.json().diff).toContain("+ max-players=20");
   });
 
+  it("stores editor snapshots and can rollback the latest snapshot", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "editor-snapshot-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=SnapshotBefore\n", "utf8");
+
+    const server = store.createServer({
+      name: "editor-snapshot-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25607,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const updateResponse = await app.inject({
+      method: "PUT",
+      url: `/servers/${server.id}/editor/file`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        path: "server.properties",
+        content: "motd=SnapshotAfter\n"
+      }
+    });
+    expect(updateResponse.statusCode).toBe(200);
+
+    const snapshotsResponse = await app.inject({
+      method: "GET",
+      url: `/servers/${server.id}/editor/file/snapshots?path=server.properties&limit=5`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+    expect(snapshotsResponse.statusCode).toBe(200);
+    expect(snapshotsResponse.json().snapshots.length).toBeGreaterThan(0);
+
+    const snapshotId = snapshotsResponse.json().snapshots[0].id as string;
+    const rollbackResponse = await app.inject({
+      method: "POST",
+      url: `/servers/${server.id}/editor/file/rollback`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        path: "server.properties",
+        snapshotId
+      }
+    });
+    expect(rollbackResponse.statusCode).toBe(200);
+    expect(fs.readFileSync(path.join(serverRoot, "server.properties"), "utf8")).toContain("SnapshotBefore");
+  });
+
   it("returns default backup policy and updates it", async () => {
     const policyGet = await app.inject({
       method: "GET",
@@ -524,6 +581,66 @@ describe("api integration", () => {
     expect(status.json().server.localAddress).toBe("127.0.0.1:25592");
     expect(status.json().publicAddress).toBeNull();
     expect(status.json().steps[0]).toContain("assigning a public endpoint");
+  });
+
+  it("blocks safe restart when preflight has critical issues", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "safe-restart-blocked-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    const blockedServer = store.createServer({
+      name: "safe-restart-blocked-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25608,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/servers/${blockedServer.id}/safe-restart`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {}
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().blocked).toBe(true);
+    expect(response.json().preflight.issues.some((issue: { severity: string }) => issue.severity === "critical")).toBe(true);
+  });
+
+  it("blocks go-live when critical preflight issues are present", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "go-live-blocked-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    const blockedServer = store.createServer({
+      name: "go-live-blocked-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25609,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/servers/${blockedServer.id}/go-live`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {}
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().blocked).toBe(true);
+    expect(response.json().warning).toContain("blocked");
   });
 
   it("returns public-hosting diagnostics and support bundle", async () => {

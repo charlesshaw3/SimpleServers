@@ -6,6 +6,7 @@ import type {
   BackupRetentionPolicyRecord,
   BackupRecord,
   CrashReportRecord,
+  EditorFileSnapshotRecord,
   ServerPackageRecord,
   ServerRecord,
   TaskRecord,
@@ -79,6 +80,15 @@ type RawUxTelemetryEvent = {
   created_at: string;
 };
 
+type RawEditorFileSnapshot = {
+  id: string;
+  server_id: string;
+  path: string;
+  content: string;
+  reason: string;
+  created_at: string;
+};
+
 function toServer(row: RawServer): ServerRecord {
   return {
     id: row.id,
@@ -149,6 +159,17 @@ function toUxTelemetryEvent(row: RawUxTelemetryEvent): UxTelemetryEventRecord {
     sessionId: row.session_id,
     event: row.event,
     metadata: row.metadata,
+    createdAt: row.created_at
+  };
+}
+
+function toEditorFileSnapshot(row: RawEditorFileSnapshot): EditorFileSnapshotRecord {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    path: row.path,
+    content: row.content,
+    reason: row.reason,
     createdAt: row.created_at
   };
 }
@@ -723,6 +744,64 @@ export const store = {
   getCrashReport(id: string): CrashReportRecord | undefined {
     const row = db.prepare("SELECT * FROM crash_reports WHERE id = ?").get(id) as RawCrashReport | undefined;
     return row ? toCrashReport(row) : undefined;
+  },
+
+  createEditorFileSnapshot(input: {
+    serverId: string;
+    path: string;
+    content: string;
+    reason: string;
+  }): EditorFileSnapshotRecord {
+    const record: EditorFileSnapshotRecord = {
+      id: uid("snap"),
+      serverId: input.serverId,
+      path: input.path,
+      content: input.content,
+      reason: input.reason,
+      createdAt: nowIso()
+    };
+
+    db.prepare(
+      "INSERT INTO editor_file_snapshots (id, server_id, path, content, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(record.id, record.serverId, record.path, record.content, record.reason, record.createdAt);
+
+    return record;
+  },
+
+  listEditorFileSnapshots(input: {
+    serverId: string;
+    path: string;
+    limit?: number;
+  }): EditorFileSnapshotRecord[] {
+    const limit = Math.max(1, Math.min(input.limit ?? 20, 100));
+    const rows = db
+      .prepare(
+        "SELECT * FROM editor_file_snapshots WHERE server_id = ? AND path = ? ORDER BY created_at DESC LIMIT ?"
+      )
+      .all(input.serverId, input.path, limit) as RawEditorFileSnapshot[];
+    return rows.map(toEditorFileSnapshot);
+  },
+
+  getEditorFileSnapshot(id: string): EditorFileSnapshotRecord | undefined {
+    const row = db.prepare("SELECT * FROM editor_file_snapshots WHERE id = ?").get(id) as RawEditorFileSnapshot | undefined;
+    return row ? toEditorFileSnapshot(row) : undefined;
+  },
+
+  pruneEditorFileSnapshots(input: {
+    serverId: string;
+    path: string;
+    keep: number;
+  }): void {
+    const keep = Math.max(1, Math.min(input.keep, 200));
+    db.prepare(
+      `DELETE FROM editor_file_snapshots
+       WHERE id IN (
+         SELECT id FROM editor_file_snapshots
+         WHERE server_id = ? AND path = ?
+         ORDER BY created_at DESC
+         LIMIT -1 OFFSET ?
+       )`
+    ).run(input.serverId, input.path, keep);
   },
 
   createUxTelemetryEvent(input: {

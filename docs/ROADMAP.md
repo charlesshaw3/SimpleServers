@@ -2,7 +2,17 @@
 
 ## Status
 
-All roadmap milestones through `v1.0.0` are implemented in this repository and validated by local build/tests.
+Current stable milestone: `v0.2.2` (validated by local typecheck/tests/build).
+
+## Implemented in v0.2.2
+
+- Reworked Overview into a command center with two primary actions (`Create Server`, `Go Live`).
+- Added goal-first operation cards (`Start`, `Share`, `Fix`) to reduce tool-hunting for non-technical users.
+- Added full per-server Network Health panel with dependency/auth/endpoint/retry states and one-click fix actions.
+- Added Crash Doctor guided runbook with auto-actions (repair core files, rollback latest config snapshot, safe restart).
+- Added API-backed editor snapshot history + rollback endpoints for reliable config recovery.
+- Added global `Beginner`/`Advanced` mode switch and persistent theme system (`Colorful`, `Dark`, `Light`, `System`).
+- Hardened Playit endpoint resolution matching to reduce “never resolves” tunnel states.
 
 ## Implemented in v0.2.1
 

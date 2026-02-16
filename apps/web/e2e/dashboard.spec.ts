@@ -245,8 +245,44 @@ test("connects and renders dashboard sections", async ({ page }) => {
           },
           message: "waiting for endpoint"
         },
-        actions: ["Keep the app running while playit assigns a public endpoint."]
+        actions: ["Keep the app running while playit assigns a public endpoint."],
+        fixes: [
+          {
+            id: "refresh_diagnostics",
+            label: "Retry Endpoint Check",
+            description: "Run diagnostics again."
+          }
+        ]
       });
+      return;
+    }
+
+    if (pathname === "/servers/srv_1/go-live" && method === "POST") {
+      await withJson(200, {
+        ok: true,
+        blocked: false,
+        warning: "Playit is still assigning a public endpoint.",
+        publicHosting: {
+          quickHostReady: false,
+          publicAddress: null,
+          tunnel: {
+            id: "tnl_1",
+            serverId: "srv_1",
+            provider: "playit",
+            protocol: "tcp",
+            localPort: 25565,
+            publicHost: "pending.playit.gg",
+            publicPort: 25565,
+            status: "pending"
+          },
+          steps: ["Playit is still assigning a public endpoint."]
+        }
+      });
+      return;
+    }
+
+    if (pathname === "/servers/srv_1/safe-restart" && method === "POST") {
+      await withJson(200, { ok: true, blocked: false });
       return;
     }
 
@@ -290,8 +326,28 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/servers/srv_1/editor/file/snapshots" && method === "GET") {
+      await withJson(200, {
+        path: "server.properties",
+        snapshots: [
+          {
+            id: "snap_1",
+            path: "server.properties",
+            reason: "before_save",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      });
+      return;
+    }
+
     if (pathname === "/servers/srv_1/editor/file" && method === "PUT") {
       await withJson(200, { ok: true, path: "server.properties" });
+      return;
+    }
+
+    if (pathname === "/servers/srv_1/editor/file/rollback" && method === "POST") {
+      await withJson(200, { ok: true, path: "server.properties", restoredSnapshotId: "snap_1" });
       return;
     }
 

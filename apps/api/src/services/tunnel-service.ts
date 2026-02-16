@@ -611,15 +611,37 @@ export class TunnelService {
         return false;
       }
 
-      const configuredLocalPort = readPlayitFieldNumber(entry.agent_config?.fields, "local_port");
-      if (configuredLocalPort !== null) {
-        return configuredLocalPort === tunnel.localPort;
-      }
-
-      return false;
+      return true;
     });
 
-    return compatible[0] ?? null;
+    const exactLocalPortMatches = compatible.filter((entry) => {
+      const localPort = resolvePlayitTunnelLocalPort(entry);
+      return localPort !== null && localPort === tunnel.localPort;
+    });
+    if (exactLocalPortMatches.length > 0) {
+      return exactLocalPortMatches[0];
+    }
+
+    // If only one compatible tunnel exists, prefer it to avoid stalling endpoint resolution.
+    if (compatible.length === 1) {
+      return compatible[0];
+    }
+
+    if (tunnel.publicHost !== "pending.playit.gg") {
+      const sameEndpoint = compatible.find(
+        (entry) => entry.display_address === `${tunnel.publicHost}:${String(tunnel.publicPort)}`
+      );
+      if (sameEndpoint) {
+        return sameEndpoint;
+      }
+    }
+
+    const publicPortMatches = compatible.filter((entry) => parseDisplayAddress(entry.display_address)?.port === tunnel.publicPort);
+    if (publicPortMatches.length === 1) {
+      return publicPortMatches[0];
+    }
+
+    return null;
   }
 
   private extractPendingReason(runData: PlayitRunDataResult["data"]): string | undefined {
@@ -897,6 +919,28 @@ function readPlayitFieldNumber(
   }
 
   return parsed;
+}
+
+function resolvePlayitTunnelLocalPort(entry: {
+  display_address: string;
+  agent_config?: {
+    fields?: Array<{
+      name: string;
+      value: string;
+    }>;
+  };
+}): number | null {
+  const fields = entry.agent_config?.fields;
+  const localPort =
+    readPlayitFieldNumber(fields, "local_port") ??
+    readPlayitFieldNumber(fields, "localPort") ??
+    readPlayitFieldNumber(fields, "from_port") ??
+    readPlayitFieldNumber(fields, "port");
+  if (localPort !== null) {
+    return localPort;
+  }
+
+  return parseDisplayAddress(entry.display_address)?.port ?? null;
 }
 
 function readPlayitSecretFile(secretPath: string): string | null {

@@ -80,6 +80,11 @@ type QuickHostingDiagnostics = {
     message: string | null;
   } | null;
   actions: string[];
+  fixes: Array<{
+    id: string;
+    label: string;
+    description: string;
+  }>;
 };
 
 type QuickStartResult = {
@@ -269,9 +274,26 @@ type ServerPropertiesFormValues = {
 
 type ServerPropertiesSnapshot = {
   id: string;
+  path: string;
+  reason: string;
   createdAt: string;
-  content: string;
 };
+
+type GoLiveResult = {
+  ok: boolean;
+  blocked: boolean;
+  preflight?: PreflightReport | null;
+  warning?: string | null;
+  publicHosting?: {
+    quickHostReady: boolean;
+    publicAddress: string | null;
+    tunnel: Tunnel | null;
+    steps: string[];
+  };
+};
+
+type ExperienceMode = "beginner" | "advanced";
+type ThemePreference = "colorful" | "dark" | "light" | "system";
 
 type AppView = "overview" | "setup" | "manage" | "content" | "advanced";
 
@@ -580,12 +602,16 @@ export default function App() {
   const [fileOriginal, setFileOriginal] = useState("");
   const [serverPropertiesRaw, setServerPropertiesRaw] = useState("");
   const [serverPropertiesForm, setServerPropertiesForm] = useState<ServerPropertiesFormValues>(defaultServerProperties);
-  const [serverPropertiesHistory, setServerPropertiesHistory] = useState<Record<string, ServerPropertiesSnapshot[]>>({});
+  const [serverPropertySnapshots, setServerPropertySnapshots] = useState<ServerPropertiesSnapshot[]>([]);
   const [loadingServerProperties, setLoadingServerProperties] = useState(false);
   const [savingServerProperties, setSavingServerProperties] = useState(false);
   const [serverPropertiesIssues, setServerPropertiesIssues] = useState<string[]>([]);
   const [repairingCore, setRepairingCore] = useState(false);
+  const [rollingBackConfig, setRollingBackConfig] = useState(false);
+  const [safeRestarting, setSafeRestarting] = useState(false);
+  const [runningCrashDoctor, setRunningCrashDoctor] = useState(false);
   const [downloadingSupportBundle, setDownloadingSupportBundle] = useState(false);
+  const [applyingNetworkFix, setApplyingNetworkFix] = useState<string | null>(null);
   const [editorFiles, setEditorFiles] = useState<EditableFileEntry[]>([]);
   const [editorSearch, setEditorSearch] = useState("");
   const [loadingEditorFile, setLoadingEditorFile] = useState(false);
@@ -611,6 +637,8 @@ export default function App() {
     allowedOriginsCsv: ""
   });
   const [activeView, setActiveView] = useState<AppView>("overview");
+  const [experienceMode, setExperienceMode] = useState<ExperienceMode>("beginner");
+  const [themePreference, setThemePreference] = useState<ThemePreference>("colorful");
   const [powerMode, setPowerMode] = useState(false);
   const [viewer, setViewer] = useState<ViewerIdentity | null>(null);
   const [hasSearchedContent, setHasSearchedContent] = useState(false);
@@ -861,6 +889,7 @@ export default function App() {
         setFilePath("server.properties");
         setFileContent("");
         setFileOriginal("");
+        setServerPropertySnapshots([]);
       }
 
       await refreshAdminData();
@@ -1060,10 +1089,12 @@ export default function App() {
       setServerPropertiesRaw("");
       setServerPropertiesForm(defaultServerProperties);
       setServerPropertiesIssues([]);
+      setServerPropertySnapshots([]);
       return;
     }
 
     void loadServerPropertiesForm(selectedServerId);
+    void refreshServerPropertySnapshots(selectedServerId);
   }, [connected, selectedServerId]);
 
   useEffect(() => {
@@ -1086,6 +1117,49 @@ export default function App() {
     const stored = window.localStorage.getItem("simpleservers.onboarding.dismissed");
     setOnboardingDismissed(stored === "1");
   }, []);
+
+  useEffect(() => {
+    const storedMode = window.localStorage.getItem("simpleservers.ui.mode");
+    if (storedMode === "beginner" || storedMode === "advanced") {
+      setExperienceMode(storedMode);
+      setPowerMode(storedMode === "advanced");
+    }
+
+    const storedTheme = window.localStorage.getItem("simpleservers.ui.theme");
+    if (storedTheme === "colorful" || storedTheme === "dark" || storedTheme === "light" || storedTheme === "system") {
+      setThemePreference(storedTheme);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("simpleservers.ui.mode", experienceMode);
+    const advancedMode = experienceMode === "advanced";
+    setPowerMode(advancedMode);
+    if (!advancedMode && activeView === "advanced") {
+      setActiveView("overview");
+    }
+  }, [experienceMode, activeView]);
+
+  useEffect(() => {
+    window.localStorage.setItem("simpleservers.ui.theme", themePreference);
+
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const applyTheme = (): void => {
+      const resolvedTheme =
+        themePreference === "system" ? (media.matches ? "light" : "dark") : themePreference;
+      document.documentElement.setAttribute("data-theme", resolvedTheme);
+      document.documentElement.style.colorScheme = resolvedTheme === "light" ? "light" : "dark";
+    };
+
+    applyTheme();
+    if (themePreference !== "system") {
+      return;
+    }
+
+    const listener = () => applyTheme();
+    media.addEventListener("change", listener);
+    return () => media.removeEventListener("change", listener);
+  }, [themePreference]);
 
   useEffect(() => {
     if (!selectedServerId || !quickHostingStatus?.publicAddress) {
@@ -1183,6 +1257,7 @@ export default function App() {
   const selectedServerStatus = normalizeStatus(selectedServer?.status);
   const selectedCanStart = canStartServer(selectedServerStatus);
   const selectedCanStop = canStopServer(selectedServerStatus);
+  const isAdvancedExperience = experienceMode === "advanced";
 
   const launchChecklist = useMemo(() => {
     const hasServer = servers.length > 0;
@@ -1308,13 +1383,6 @@ export default function App() {
   const hasRepairablePreflightIssue = useMemo(() => {
     return Boolean(preflight?.issues.some((issue) => issue.code === "missing_eula" || issue.code === "missing_server_jar"));
   }, [preflight?.issues]);
-
-  const serverPropertySnapshots = useMemo(() => {
-    if (!selectedServerId) {
-      return [] as ServerPropertiesSnapshot[];
-    }
-    return serverPropertiesHistory[selectedServerId] ?? [];
-  }, [selectedServerId, serverPropertiesHistory]);
 
   useEffect(() => {
     if (!connected || !selectedServerId || !quickHostPending) {
@@ -1617,6 +1685,9 @@ export default function App() {
         setServerPropertiesForm(deriveServerPropertiesForm(fileContent));
       }
       await refreshEditorFiles(selectedServerId);
+      if (filePath === "server.properties") {
+        await refreshServerPropertySnapshots(selectedServerId);
+      }
       setNotice(`Saved ${filePath}.`);
       setError(null);
     } catch (e) {
@@ -1643,6 +1714,21 @@ export default function App() {
     }
   }
 
+  async function refreshServerPropertySnapshots(serverId: string): Promise<void> {
+    try {
+      const query = new URLSearchParams({
+        path: "server.properties",
+        limit: "20"
+      });
+      const response = await api.current.get<{ path: string; snapshots: ServerPropertiesSnapshot[] }>(
+        `/servers/${serverId}/editor/file/snapshots?${query.toString()}`
+      );
+      setServerPropertySnapshots(response.snapshots ?? []);
+    } catch {
+      setServerPropertySnapshots([]);
+    }
+  }
+
   async function saveServerPropertiesForm(): Promise<void> {
     if (!selectedServerId) {
       return;
@@ -1662,19 +1748,6 @@ export default function App() {
         content: nextContent
       });
 
-      const snapshot: ServerPropertiesSnapshot = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-        createdAt: new Date().toISOString(),
-        content: serverPropertiesRaw
-      };
-      setServerPropertiesHistory((previous) => {
-        const existing = previous[selectedServerId] ?? [];
-        return {
-          ...previous,
-          [selectedServerId]: [snapshot, ...existing].slice(0, 20)
-        };
-      });
-
       setServerPropertiesRaw(nextContent);
       if (filePath === "server.properties") {
         setFileContent(nextContent);
@@ -1684,6 +1757,7 @@ export default function App() {
       setNotice("Saved server.properties from the guided form.");
       setError(null);
       await refreshEditorFiles(selectedServerId);
+      await refreshServerPropertySnapshots(selectedServerId);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1702,27 +1776,188 @@ export default function App() {
 
     try {
       setSavingServerProperties(true);
-      await api.current.put(`/servers/${selectedServerId}/editor/file`, {
+      await api.current.post(`/servers/${selectedServerId}/editor/file/rollback`, {
         path: "server.properties",
-        content: snapshot.content
+        snapshotId: snapshot.id
       });
-      setServerPropertiesRaw(snapshot.content);
-      setServerPropertiesForm(deriveServerPropertiesForm(snapshot.content));
-      setServerPropertiesHistory((previous) => ({
-        ...previous,
-        [selectedServerId]: (previous[selectedServerId] ?? []).filter((entry) => entry.id !== snapshot.id)
-      }));
+      await loadServerPropertiesForm(selectedServerId);
       if (filePath === "server.properties") {
-        setFileContent(snapshot.content);
-        setFileOriginal(snapshot.content);
+        const query = new URLSearchParams({ path: "server.properties" });
+        const response = await api.current.get<{ path: string; content: string }>(`/servers/${selectedServerId}/editor/file?${query.toString()}`);
+        setFileContent(response.content ?? "");
+        setFileOriginal(response.content ?? "");
       }
       setNotice("Restored server.properties snapshot.");
       setError(null);
       await refreshEditorFiles(selectedServerId);
+      await refreshServerPropertySnapshots(selectedServerId);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSavingServerProperties(false);
+    }
+  }
+
+  async function rollbackLatestServerPropertiesSnapshot(): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+    const latest = serverPropertySnapshots[0];
+    if (!latest) {
+      setNotice("No server.properties snapshots found yet.");
+      return;
+    }
+
+    try {
+      setRollingBackConfig(true);
+      await api.current.post(`/servers/${selectedServerId}/editor/file/rollback`, {
+        path: "server.properties",
+        snapshotId: latest.id
+      });
+      await loadServerPropertiesForm(selectedServerId);
+      await refreshEditorFiles(selectedServerId);
+      await refreshServerPropertySnapshots(selectedServerId);
+      setNotice("Rolled back to the latest server.properties snapshot.");
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRollingBackConfig(false);
+    }
+  }
+
+  async function safeRestartServer(): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    try {
+      setSafeRestarting(true);
+      const result = await api.current.post<{ ok: boolean; blocked?: boolean; preflight?: PreflightReport; error?: string }>(
+        `/servers/${selectedServerId}/safe-restart`,
+        {}
+      );
+      if (result.blocked) {
+        setPreflight(result.preflight ?? null);
+        setError("Safe restart blocked by critical preflight issues.");
+      } else {
+        setNotice("Safe restart completed.");
+        setError(null);
+      }
+      await refreshAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSafeRestarting(false);
+    }
+  }
+
+  async function goLiveNow(): Promise<void> {
+    if (!selectedServerId) {
+      setNotice("Create or select a server first.");
+      return;
+    }
+
+    try {
+      setBusy(true);
+      const response = await api.current.post<GoLiveResult>(`/servers/${selectedServerId}/go-live`, {});
+      if (response.blocked) {
+        setPreflight(response.preflight ?? null);
+        setError("Go Live was blocked by preflight checks. Open Fix to apply guided recovery.");
+      } else {
+        setNotice(
+          response.publicHosting?.publicAddress
+            ? `Server is live: ${response.publicHosting.publicAddress}`
+            : response.warning ?? "Go Live started. Tunnel is still resolving."
+        );
+        setError(null);
+      }
+      await refreshAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runNetworkFix(fixId: string): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    try {
+      setApplyingNetworkFix(fixId);
+      if (fixId === "enable_quick_hosting") {
+        await api.current.post(`/servers/${selectedServerId}/public-hosting/quick-enable`, {});
+      } else if (fixId === "start_server") {
+        await serverAction(selectedServerId, "start");
+      } else if (fixId === "start_tunnel") {
+        const tunnelId = quickHostingDiagnostics?.diagnostics?.tunnelId;
+        if (tunnelId) {
+          await api.current.post(`/tunnels/${tunnelId}/start`);
+        }
+      } else if (fixId === "refresh_diagnostics") {
+        await refreshServerOperations(selectedServerId);
+      } else if (fixId === "copy_playit_auth_steps") {
+        copyAddress(
+          "Run `playit` once to complete login, or set PLAYIT_SECRET / PLAYIT_SECRET_PATH so SimpleServers can sync your endpoint."
+        );
+        setNotice("Copied Playit auth steps to clipboard.");
+      }
+
+      await refreshServerOperations(selectedServerId);
+      await refreshAll();
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplyingNetworkFix(null);
+    }
+  }
+
+  async function runCrashDoctor(): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    try {
+      setRunningCrashDoctor(true);
+      const completed: string[] = [];
+
+      if (hasRepairablePreflightIssue) {
+        const repairResponse = await api.current.post<{ repaired: string[] }>(`/servers/${selectedServerId}/preflight/repair-core`, {});
+        if (repairResponse.repaired.length > 0) {
+          completed.push("repaired core files");
+        }
+      }
+
+      const latestSnapshot = serverPropertySnapshots[0];
+      if (latestSnapshot) {
+        await api.current.post(`/servers/${selectedServerId}/editor/file/rollback`, {
+          path: "server.properties",
+          snapshotId: latestSnapshot.id
+        });
+        completed.push("rolled back config");
+      }
+
+      const restartResult = await api.current.post<{ blocked?: boolean; preflight?: PreflightReport }>(
+        `/servers/${selectedServerId}/safe-restart`,
+        {}
+      );
+      if (restartResult.blocked) {
+        setPreflight(restartResult.preflight ?? null);
+        throw new Error("Safe restart was blocked by preflight checks.");
+      }
+
+      completed.push("safe restart complete");
+      await refreshAll();
+      await refreshServerPropertySnapshots(selectedServerId);
+      setNotice(`Crash Doctor: ${completed.join(", ")}.`);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunningCrashDoctor(false);
     }
   }
 
@@ -2005,6 +2240,9 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <a href="#main-content" className="skip-link">
+        Skip to Main Content
+      </a>
       <header className="hero">
         <div>
           <h1>SimpleServers</h1>
@@ -2038,7 +2276,7 @@ export default function App() {
         </form>
       </header>
 
-      <section className="panel control-strip">
+      <section className="panel control-strip" id="main-content">
         <nav className="view-nav" aria-label="Workspace views">
           <button className={activeView === "overview" ? "active" : ""} onClick={() => setActiveView("overview")} type="button">
             Overview
@@ -2052,14 +2290,36 @@ export default function App() {
           <button className={activeView === "content" ? "active" : ""} onClick={() => setActiveView("content")} type="button">
             Content
           </button>
-          <button className={activeView === "advanced" ? "active" : ""} onClick={() => setActiveView("advanced")} type="button">
-            Advanced
-          </button>
+          {isAdvancedExperience ? (
+            <button className={activeView === "advanced" ? "active" : ""} onClick={() => setActiveView("advanced")} type="button">
+              Advanced
+            </button>
+          ) : null}
         </nav>
         <div className="inline-actions">
-          <label className="toggle">
-            <input type="checkbox" checked={powerMode} onChange={(e) => setPowerMode(e.target.checked)} />
-            Power mode
+          <label className="compact-field">
+            Mode
+            <select
+              aria-label="Experience mode"
+              value={experienceMode}
+              onChange={(event) => setExperienceMode(event.target.value as ExperienceMode)}
+            >
+              <option value="beginner">Beginner</option>
+              <option value="advanced">Advanced</option>
+            </select>
+          </label>
+          <label className="compact-field">
+            Theme
+            <select
+              aria-label="Theme preference"
+              value={themePreference}
+              onChange={(event) => setThemePreference(event.target.value as ThemePreference)}
+            >
+              <option value="colorful">Colorful</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="system">System</option>
+            </select>
           </label>
           <button type="button" onClick={() => void refreshAll()} disabled={!connected || busy}>
             {busy ? "Refreshing..." : "Refresh"}
@@ -2067,8 +2327,8 @@ export default function App() {
         </div>
       </section>
 
-      {error ? <div className="error-banner">{error}</div> : null}
-      {notice && !error ? <div className="notice-banner">{notice}</div> : null}
+      {error ? <div className="error-banner" role="alert">{error}</div> : null}
+      {notice && !error ? <div className="notice-banner" aria-live="polite">{notice}</div> : null}
 
       <section className="panel context-strip">
         <div>
@@ -2139,6 +2399,178 @@ export default function App() {
 
       {activeView === "overview" ? (
         <>
+          <section className="panel command-center">
+            <h2>Command Center</h2>
+            <p className="muted-note">
+              Two actions for non-technical hosting: create a server, then go live with a shareable multiplayer address.
+            </p>
+            <div className="command-grid">
+              <button
+                type="button"
+                className="primary-cta"
+                onClick={() => {
+                  if (servers.length === 0) {
+                    void quickStartNow();
+                    return;
+                  }
+                  setActiveView("setup");
+                }}
+                disabled={busy}
+              >
+                {busy ? "Working..." : servers.length === 0 ? "Create Server" : "Create Another Server"}
+              </button>
+              <button type="button" className="primary-cta secondary" onClick={() => void goLiveNow()} disabled={busy || !selectedServerId}>
+                {busy ? "Working..." : "Go Live"}
+              </button>
+            </div>
+            <p className="muted-note">
+              {selectedServerId
+                ? quickHostingStatus?.publicAddress
+                  ? `Ready to share: ${quickHostingStatus.publicAddress}`
+                  : "No public address yet. Use Go Live to start hosting + tunnel checks."
+                : "Create a server first to unlock Go Live."}
+            </p>
+          </section>
+
+          <section className="goal-grid">
+            <article className="panel goal-card">
+              <h3>Start</h3>
+              <p className="muted-note">Make sure the selected server runtime is online.</p>
+              <span className={`status-pill ${isServerRunning(selectedServerStatus) ? "tone-ok" : "tone-warn"}`}>
+                {isServerRunning(selectedServerStatus) ? "Running" : "Stopped"}
+              </span>
+              <div className="inline-actions">
+                {selectedServerId ? (
+                  <button type="button" onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart}>
+                    Start Server
+                  </button>
+                ) : null}
+                {selectedServerId ? (
+                  <button type="button" onClick={() => void safeRestartServer()} disabled={safeRestarting}>
+                    {safeRestarting ? "Restarting..." : "Safe Restart"}
+                  </button>
+                ) : null}
+              </div>
+            </article>
+
+            <article className="panel goal-card">
+              <h3>Share</h3>
+              <p className="muted-note">Publish and copy a public endpoint your players can use.</p>
+              <span className={`status-pill ${quickHostingStatus?.publicAddress ? "tone-ok" : "tone-warn"}`}>
+                {quickHostingStatus?.publicAddress ? "Address Ready" : "Needs Tunnel"}
+              </span>
+              <div className="inline-actions">
+                {selectedServerId ? (
+                  <button type="button" onClick={() => void enableQuickHosting()}>
+                    Enable Hosting
+                  </button>
+                ) : null}
+                {quickHostingStatus?.publicAddress ? (
+                  <button type="button" onClick={() => copyAddress(quickHostingStatus.publicAddress ?? "")}>
+                    Copy Address
+                  </button>
+                ) : null}
+              </div>
+            </article>
+
+            <article className="panel goal-card">
+              <h3>Fix</h3>
+              <p className="muted-note">Run guided recovery if startup or tunnel resolution fails.</p>
+              <span className={`status-pill ${selectedServerStatus === "crashed" || unresolvedAlerts.length > 0 ? "tone-error" : "tone-ok"}`}>
+                {selectedServerStatus === "crashed" || unresolvedAlerts.length > 0 ? "Needs Attention" : "Healthy"}
+              </span>
+              <div className="inline-actions">
+                <button type="button" onClick={() => setActiveView("manage")}>
+                  Open Crash Doctor
+                </button>
+                {selectedServerId ? (
+                  <button type="button" onClick={() => void runCrashDoctor()} disabled={runningCrashDoctor}>
+                    {runningCrashDoctor ? "Running..." : "Run Auto Fix"}
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          </section>
+
+          <section className="panel network-health">
+            <h2>Network Health</h2>
+            <p className="muted-note">Live tunnel readiness with one-click fixes for dependency, auth, endpoint sync, and retries.</p>
+            {quickHostingDiagnostics?.diagnostics ? (
+              <>
+                <ul className="list list-compact">
+                  <li>
+                    <div>
+                      <strong>Dependency</strong>
+                      <span>Command: <code>{quickHostingDiagnostics.diagnostics.command}</code></span>
+                    </div>
+                    <span className={`status-pill ${quickHostingDiagnostics.diagnostics.commandAvailable ? "tone-ok" : "tone-error"}`}>
+                      {quickHostingDiagnostics.diagnostics.commandAvailable ? "Ready" : "Missing"}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Authentication</strong>
+                      <span>
+                        {quickHostingDiagnostics.diagnostics.authConfigured === null
+                          ? "Not required for this provider."
+                          : quickHostingDiagnostics.diagnostics.authConfigured
+                          ? "Playit secret is configured."
+                          : "Playit secret missing."}
+                      </span>
+                    </div>
+                    <span
+                      className={`status-pill ${
+                        quickHostingDiagnostics.diagnostics.authConfigured === false ? "tone-warn" : "tone-ok"
+                      }`}
+                    >
+                      {quickHostingDiagnostics.diagnostics.authConfigured === false ? "Needs Setup" : "Ready"}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Endpoint</strong>
+                      <span>{quickHostingDiagnostics.diagnostics.endpoint ?? "Waiting for public endpoint assignment."}</span>
+                    </div>
+                    <span className={`status-pill ${quickHostingDiagnostics.diagnostics.endpointAssigned ? "tone-ok" : "tone-warn"}`}>
+                      {quickHostingDiagnostics.diagnostics.endpointAssigned ? "Assigned" : "Pending"}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Retry Window</strong>
+                      <span>
+                        {quickHostRetryCountdown !== null
+                          ? `Auto retry in ${quickHostRetryCountdown}s`
+                          : quickHostingDiagnostics.diagnostics.retry.lastAttemptAt
+                          ? `Last attempt ${new Date(quickHostingDiagnostics.diagnostics.retry.lastAttemptAt).toLocaleTimeString()}`
+                          : "No retry scheduled"}
+                      </span>
+                    </div>
+                    <span className={`status-pill ${quickHostRetryCountdown !== null ? "tone-warn" : "tone-neutral"}`}>
+                      {quickHostRetryCountdown !== null ? "Waiting" : "Idle"}
+                    </span>
+                  </li>
+                </ul>
+                {quickHostingDiagnostics.diagnostics.message ? <p className="muted-note">{quickHostingDiagnostics.diagnostics.message}</p> : null}
+                <div className="inline-actions">
+                  {(quickHostingDiagnostics.fixes ?? []).map((fix) => (
+                    <button
+                      key={fix.id}
+                      type="button"
+                      onClick={() => void runNetworkFix(fix.id)}
+                      disabled={applyingNetworkFix === fix.id}
+                      title={fix.description}
+                    >
+                      {applyingNetworkFix === fix.id ? "Applying..." : fix.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="muted-note">Enable quick hosting to start network diagnostics.</p>
+            )}
+          </section>
+
           <section className="stats-grid">
             <article>
               <h3>Servers</h3>
@@ -2177,13 +2609,9 @@ export default function App() {
                   <button onClick={() => void quickStartNow()} disabled={busy} type="button">
                     {busy ? "Working..." : "Create Server"}
                   </button>
-                ) : selectedServerId && !isServerRunning(selectedServerStatus) ? (
-                  <button onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart} type="button">
-                    Start Server
-                  </button>
                 ) : selectedServerId && !quickHostingStatus?.publicAddress ? (
-                  <button onClick={() => void enableQuickHosting()} type="button">
-                    Enable Public Hosting
+                  <button onClick={() => void goLiveNow()} type="button" disabled={busy}>
+                    {busy ? "Working..." : "Go Live"}
                   </button>
                 ) : quickHostingStatus?.publicAddress ? (
                   <button onClick={() => copyAddress(quickHostingStatus.publicAddress ?? "")} type="button">
@@ -2245,8 +2673,8 @@ export default function App() {
                 ) : null}
                 <div className="inline-actions">
                   {selectedServerId ? (
-                    <button onClick={() => void enableQuickHosting()} type="button" disabled={Boolean(quickHostingStatus?.quickHostReady)}>
-                      Enable Public Hosting
+                    <button onClick={() => void goLiveNow()} type="button" disabled={busy}>
+                      {busy ? "Working..." : "Go Live"}
                     </button>
                   ) : null}
                   {quickHostingStatus?.publicAddress ? (
@@ -2433,7 +2861,7 @@ export default function App() {
           <section className="panel">
             <h2>Guided Server Setup</h2>
             <p className="muted-note">
-              Pick a preset and launch in seconds. Advanced fields stay hidden until you turn on Power mode.
+              Pick a preset and launch in seconds. Advanced fields stay hidden until you switch to Advanced mode.
             </p>
             <div className="preset-grid">
               {setupPresets.map((preset) => (
@@ -2455,9 +2883,9 @@ export default function App() {
               <button onClick={() => void quickStartNow()} disabled={busy} type="button">
                 {busy ? "Working..." : "Instant Launch (Recommended)"}
               </button>
-              {!powerMode ? (
-                <button onClick={() => setPowerMode(true)} type="button">
-                  Show Advanced Setup
+              {!isAdvancedExperience ? (
+                <button onClick={() => setExperienceMode("advanced")} type="button">
+                  Switch to Advanced Mode
                 </button>
               ) : null}
             </div>
@@ -2659,8 +3087,8 @@ export default function App() {
             {selectedServerId ? (
               <>
                 <div className="inline-actions">
-                  <button onClick={() => void enableQuickHosting()} type="button" disabled={Boolean(quickHostingStatus?.quickHostReady)}>
-                    Enable Public Hosting
+                  <button onClick={() => void goLiveNow()} type="button" disabled={busy}>
+                    {busy ? "Working..." : "Go Live"}
                   </button>
                   {selectedServerId ? (
                     <button onClick={() => void refreshServerOperations(selectedServerId)} type="button">
@@ -2744,6 +3172,21 @@ export default function App() {
                         ))}
                       </ul>
                     ) : null}
+                    {(quickHostingDiagnostics.fixes ?? []).length > 0 ? (
+                      <div className="inline-actions">
+                        {quickHostingDiagnostics.fixes.map((fix) => (
+                          <button
+                            key={fix.id}
+                            type="button"
+                            onClick={() => void runNetworkFix(fix.id)}
+                            disabled={applyingNetworkFix === fix.id}
+                            title={fix.description}
+                          >
+                            {applyingNetworkFix === fix.id ? "Applying..." : fix.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     {quickHostPending && quickHostRetryCountdown !== null ? (
                       <p className="muted-note">Auto-retry in {quickHostRetryCountdown}s.</p>
                     ) : null}
@@ -2768,24 +3211,42 @@ export default function App() {
 
       {activeView === "manage" ? (
         <>
-          <section className="panel">
-            <h2>Troubleshooting</h2>
-            <p className="muted-note">Guidance based on current server health, tunnel status, and common setup mistakes.</p>
-            <ul className="tip-list">
-              {troubleshootingTips.length > 0 ? troubleshootingTips.map((tip) => <li key={tip}>{tip}</li>) : <li>No active issues detected.</li>}
-            </ul>
+          <section className="panel crash-doctor-panel">
+            <h2>Crash Doctor</h2>
+            <p className="muted-note">Guided recovery runbook with auto-actions for startup failures and broken tunnel sessions.</p>
+            <ol className="runbook-list">
+              <li>
+                <strong>Repair core startup files</strong>
+                <span>Regenerate missing `eula.txt` / bootstrap files when preflight is blocked.</span>
+              </li>
+              <li>
+                <strong>Rollback latest config snapshot</strong>
+                <span>Restore the previous `server.properties` state saved before edits.</span>
+              </li>
+              <li>
+                <strong>Safe restart</strong>
+                <span>Stop, run preflight, then start again with tunnel restart checks.</span>
+              </li>
+            </ol>
             <div className="inline-actions">
-              <button type="button" onClick={() => setActiveView("setup")}>
-                Open Setup
-              </button>
               {selectedServerId ? (
-                <button type="button" onClick={() => void refreshServerOperations(selectedServerId)}>
-                  Refresh Server Diagnostics
+                <button type="button" onClick={() => void runCrashDoctor()} disabled={runningCrashDoctor}>
+                  {runningCrashDoctor ? "Running..." : "Run Crash Doctor"}
                 </button>
               ) : null}
               {selectedServerId && hasRepairablePreflightIssue ? (
                 <button type="button" onClick={() => void repairCoreStartupFiles()} disabled={repairingCore}>
-                  {repairingCore ? "Repairing..." : "Repair Core Startup Files"}
+                  {repairingCore ? "Repairing..." : "Repair Core Files"}
+                </button>
+              ) : null}
+              {selectedServerId ? (
+                <button type="button" onClick={() => void rollbackLatestServerPropertiesSnapshot()} disabled={rollingBackConfig}>
+                  {rollingBackConfig ? "Rolling Back..." : "Rollback Latest Config"}
+                </button>
+              ) : null}
+              {selectedServerId ? (
+                <button type="button" onClick={() => void safeRestartServer()} disabled={safeRestarting}>
+                  {safeRestarting ? "Restarting..." : "Safe Restart"}
                 </button>
               ) : null}
               {selectedServerId ? (
@@ -2793,12 +3254,10 @@ export default function App() {
                   {downloadingSupportBundle ? "Preparing Bundle..." : "Export Support Bundle"}
                 </button>
               ) : null}
-              {selectedServerId && selectedServerStatus !== "running" ? (
-                <button type="button" onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart}>
-                  Start Server
-                </button>
-              ) : null}
             </div>
+            <ul className="tip-list">
+              {troubleshootingTips.length > 0 ? troubleshootingTips.map((tip) => <li key={tip}>{tip}</li>) : <li>No active issues detected.</li>}
+            </ul>
           </section>
 
           <section className="dual-grid">
@@ -3097,7 +3556,9 @@ export default function App() {
                       <li key={snapshot.id}>
                         <div>
                           <strong>{new Date(snapshot.createdAt).toLocaleString()}</strong>
-                          <span>Previous server.properties state</span>
+                          <span>
+                            {snapshot.reason === "before_rollback" ? "State captured before rollback" : "Previous server.properties state"}
+                          </span>
                         </div>
                         <button type="button" onClick={() => void restoreServerPropertiesSnapshot(snapshot)} disabled={savingServerProperties}>
                           Restore Snapshot
@@ -3178,17 +3639,27 @@ export default function App() {
             <article className="panel">
               <h2>Crash Reports</h2>
               <div className="recovery-box">
-                <h3>Recovery Assistant</h3>
-                <p className="muted-note">If startup fails, run these quick fixes before digging through raw logs.</p>
+                <h3>Crash Doctor Actions</h3>
+                <p className="muted-note">Use this runbook when the server crashes or fails to start.</p>
                 <div className="inline-actions">
                   {selectedServerId ? (
-                    <button type="button" onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart}>
-                      Retry Start
+                    <button type="button" onClick={() => void runCrashDoctor()} disabled={runningCrashDoctor}>
+                      {runningCrashDoctor ? "Running..." : "Run Auto Fix"}
                     </button>
                   ) : null}
                   {selectedServerId && hasRepairablePreflightIssue ? (
                     <button type="button" onClick={() => void repairCoreStartupFiles()} disabled={repairingCore}>
                       {repairingCore ? "Repairing..." : "Repair Missing Core Files"}
+                    </button>
+                  ) : null}
+                  {selectedServerId ? (
+                    <button type="button" onClick={() => void rollbackLatestServerPropertiesSnapshot()} disabled={rollingBackConfig}>
+                      {rollingBackConfig ? "Rolling Back..." : "Rollback Config Snapshot"}
+                    </button>
+                  ) : null}
+                  {selectedServerId ? (
+                    <button type="button" onClick={() => void safeRestartServer()} disabled={safeRestarting}>
+                      {safeRestarting ? "Restarting..." : "Safe Restart"}
                     </button>
                   ) : null}
                   {selectedServerId ? (
@@ -3361,12 +3832,12 @@ export default function App() {
         </section>
       ) : null}
 
-      {activeView === "advanced" ? (
+      {activeView === "advanced" && isAdvancedExperience ? (
         <>
           <section className="panel">
             <h2>Advanced Workspace</h2>
             <p className="muted-note">
-              Power mode keeps all expert tools available while the main experience stays clean for everyday hosting tasks.
+              Advanced mode keeps expert tools available while Beginner mode stays focused on simple goals.
             </p>
           </section>
 

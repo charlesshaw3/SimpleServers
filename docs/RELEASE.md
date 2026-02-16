@@ -2,7 +2,7 @@
 
 SimpleServers ships desktop artifacts via Electron Builder and GitHub Actions.
 
-Canonical repository: `https://github.com/dueldev/SimpleServers`
+Canonical repository: `https://github.com/charlesshaw3/SimpleServers`
 
 ## Workflows
 
@@ -95,6 +95,13 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.2.2`
+  - Added a command-center overview with two primary actions (`Create Server`, `Go Live`) and goal-first cards (`Start`, `Share`, `Fix`).
+  - Added Network Health panel + diagnostics fix metadata so dependency/auth/endpoint/retry issues now have one-click recovery actions.
+  - Added Crash Doctor runbook with automated recovery path: repair core files, rollback latest config snapshot, and safe restart.
+  - Added API-backed config snapshot history (`editor/file/snapshots`) and rollback endpoint (`editor/file/rollback`).
+  - Added global Beginner/Advanced mode switch, persistent theme system, and accessibility improvements (focus paths / keyboard-friendly controls).
+  - Improved Playit endpoint matching logic to avoid unresolved tunnel states when run data omits explicit local-port fields.
 - `v0.2.1`
   - Added a first-run Startup Wizard and simpler action flow for non-technical operators.
   - Added public-hosting diagnostics endpoint + UI (`dependency`, `auth`, `endpoint`, `retry`) to reduce unresolved tunnel guesswork.

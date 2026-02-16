@@ -162,6 +162,16 @@ const editorDiffSchema = z.object({
   nextContent: z.string()
 });
 
+const editorFileSnapshotsQuerySchema = z.object({
+  path: z.string().trim().min(1).max(260),
+  limit: z.coerce.number().int().min(1).max(100).default(20)
+});
+
+const editorRollbackSchema = z.object({
+  path: z.string().trim().min(1).max(260),
+  snapshotId: z.string().trim().optional()
+});
+
 const telemetryEventSchema = z.object({
   sessionId: z.string().trim().min(6).max(128),
   event: z.string().trim().min(3).max(120),
@@ -892,6 +902,147 @@ export async function registerApiRoutes(
     return { ok: true };
   });
 
+  app.post("/servers/:id/safe-restart", { preHandler: [authenticate, requireRole("admin")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    try {
+      if (deps.runtime.isRunning(id) || server.status === "running" || server.status === "starting") {
+        await deps.tunnels.stopTunnelsForServer(id);
+        await deps.runtime.stop(id);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(409).send({
+        ok: false,
+        error: `Failed to stop running server before safe restart: ${message}`
+      });
+    }
+
+    const refreshedServer = store.getServerById(id);
+    if (!refreshedServer) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const preflight = deps.preflight.run(refreshedServer);
+    const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
+    if (criticalIssue) {
+      deps.alerts.createAlert(refreshedServer.id, "critical", "preflight_block", criticalIssue.message);
+      return {
+        ok: false,
+        blocked: true,
+        preflight
+      };
+    }
+
+    for (const issue of preflight.issues.filter((issue) => issue.severity === "warning")) {
+      deps.alerts.createAlert(refreshedServer.id, "warning", "preflight_warning", issue.message);
+    }
+
+    try {
+      await deps.runtime.start(refreshedServer);
+      await deps.tunnels.startTunnelsForServer(refreshedServer.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.alerts.createAlert(refreshedServer.id, "critical", "safe_restart_failed", message);
+      return reply.code(500).send({ ok: false, error: `Safe restart failed: ${message}` });
+    }
+
+    writeAudit(request.user!.username, "server.safe_restart", "server", id, {
+      mode: "stop_preflight_start"
+    });
+
+    return {
+      ok: true,
+      blocked: false,
+      preflight
+    };
+  });
+
+  app.post("/servers/:id/go-live", { preHandler: [authenticate, requireRole("admin")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const preflight = deps.preflight.run(server);
+    const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
+    if (criticalIssue) {
+      deps.alerts.createAlert(server.id, "critical", "preflight_block", criticalIssue.message);
+      return {
+        ok: false,
+        blocked: true,
+        preflight,
+        warning: "Go Live blocked by critical preflight issue."
+      };
+    }
+
+    for (const issue of preflight.issues.filter((issue) => issue.severity === "warning")) {
+      deps.alerts.createAlert(server.id, "warning", "preflight_warning", issue.message);
+    }
+
+    const running = deps.runtime.isRunning(id) || server.status === "running" || server.status === "starting";
+    let warning: string | null = null;
+    if (!running) {
+      try {
+        await deps.runtime.start(server);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.alerts.createAlert(server.id, "critical", "go_live_start_failed", message);
+        return reply.code(500).send({ ok: false, blocked: false, preflight, error: `Failed to start server: ${message}` });
+      }
+    }
+
+    const tunnel = deps.tunnels.ensureQuickTunnel(server.id);
+    try {
+      await deps.tunnels.startTunnel(tunnel.id);
+      const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+      if (syncResult.pendingReason) {
+        warning = syncResult.pendingReason;
+      }
+    } catch (error) {
+      warning = error instanceof Error ? error.message : String(error);
+    }
+
+    const tunnels = deps.tunnels.listTunnels(server.id);
+    const activeTunnel = tunnels.find((entry) => entry.provider === "playit") ?? tunnels[0] ?? null;
+    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
+    const quickHostReady = Boolean(activeTunnel && hasResolvedPublicAddress);
+    const publicAddress = hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null;
+    if (!publicAddress && !warning) {
+      warning = "Playit is still assigning a public endpoint.";
+    }
+
+    writeAudit(request.user!.username, "server.go_live", "server", id, {
+      tunnelId: activeTunnel?.id ?? null,
+      quickHostReady,
+      publicAddress,
+      warning
+    });
+
+    return {
+      ok: true,
+      blocked: false,
+      preflight,
+      warning,
+      publicHosting: {
+        quickHostReady,
+        publicAddress,
+        tunnel: activeTunnel,
+        steps: quickHostReady
+          ? ["Share the public address with players.", "Keep this app running while hosting."]
+          : [
+              "Playit is still assigning a public endpoint.",
+              "Keep this machine online until the endpoint resolves."
+            ]
+      }
+    };
+  });
+
   app.post("/servers/:id/command", { preHandler: [authenticate, requireRole("moderator")] }, async (request) => {
     const { id } = request.params as { id: string };
     const payload = commandSchema.parse(request.body);
@@ -1064,6 +1215,32 @@ export async function registerApiRoutes(
     };
   });
 
+  app.get("/servers/:id/editor/file/snapshots", { preHandler: [authenticate] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const query = editorFileSnapshotsQuerySchema.parse(request.query);
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const resolved = resolveEditorFilePath(server.rootPath, query.path);
+    const snapshots = store.listEditorFileSnapshots({
+      serverId: server.id,
+      path: resolved.relativePath,
+      limit: query.limit
+    });
+
+    return {
+      path: resolved.relativePath,
+      snapshots: snapshots.map((snapshot) => ({
+        id: snapshot.id,
+        path: snapshot.path,
+        reason: snapshot.reason,
+        createdAt: snapshot.createdAt
+      }))
+    };
+  });
+
   app.put("/servers/:id/editor/file", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
     const { id } = request.params as { id: string };
     const body = editorWriteSchema.parse(request.body);
@@ -1078,6 +1255,26 @@ export async function registerApiRoutes(
       throw app.httpErrors.badRequest(`File content exceeds ${Math.floor(maxEditableFileBytes / 1024)} KB editor limit`);
     }
 
+    if (fs.existsSync(resolved.absolutePath)) {
+      const existingStats = fs.statSync(resolved.absolutePath);
+      if (existingStats.isFile() && existingStats.size <= maxEditableFileBytes) {
+        const existingContent = fs.readFileSync(resolved.absolutePath, "utf8");
+        if (existingContent !== body.content) {
+          store.createEditorFileSnapshot({
+            serverId: server.id,
+            path: resolved.relativePath,
+            content: existingContent,
+            reason: "before_save"
+          });
+          store.pruneEditorFileSnapshots({
+            serverId: server.id,
+            path: resolved.relativePath,
+            keep: 40
+          });
+        }
+      }
+    }
+
     fs.mkdirSync(path.dirname(resolved.absolutePath), { recursive: true });
     fs.writeFileSync(resolved.absolutePath, body.content, "utf8");
 
@@ -1087,6 +1284,62 @@ export async function registerApiRoutes(
     });
 
     return { ok: true, path: resolved.relativePath };
+  });
+
+  app.post("/servers/:id/editor/file/rollback", { preHandler: [authenticate, requireRole("admin")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = editorRollbackSchema.parse(request.body);
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const resolved = resolveEditorFilePath(server.rootPath, body.path);
+    const snapshot = body.snapshotId
+      ? store.getEditorFileSnapshot(body.snapshotId)
+      : store.listEditorFileSnapshots({
+          serverId: server.id,
+          path: resolved.relativePath,
+          limit: 1
+        })[0];
+
+    if (!snapshot || snapshot.serverId !== server.id || snapshot.path !== resolved.relativePath) {
+      return reply.code(404).send({ error: "Snapshot not found for this file" });
+    }
+
+    if (fs.existsSync(resolved.absolutePath)) {
+      const existingStats = fs.statSync(resolved.absolutePath);
+      if (existingStats.isFile() && existingStats.size <= maxEditableFileBytes) {
+        const existingContent = fs.readFileSync(resolved.absolutePath, "utf8");
+        if (existingContent !== snapshot.content) {
+          store.createEditorFileSnapshot({
+            serverId: server.id,
+            path: resolved.relativePath,
+            content: existingContent,
+            reason: "before_rollback"
+          });
+        }
+      }
+    }
+
+    fs.mkdirSync(path.dirname(resolved.absolutePath), { recursive: true });
+    fs.writeFileSync(resolved.absolutePath, snapshot.content, "utf8");
+    store.pruneEditorFileSnapshots({
+      serverId: server.id,
+      path: resolved.relativePath,
+      keep: 40
+    });
+
+    writeAudit(request.user!.username, "server.editor_file.rollback", "server", id, {
+      path: resolved.relativePath,
+      snapshotId: snapshot.id
+    });
+
+    return {
+      ok: true,
+      path: resolved.relativePath,
+      restoredSnapshotId: snapshot.id
+    };
   });
 
   app.post("/servers/:id/editor/file/diff", { preHandler: [authenticate] }, async (request) => {
@@ -1230,7 +1483,14 @@ export async function registerApiRoutes(
     if (!tunnel) {
       return {
         diagnostics: null,
-        actions: ["Enable quick hosting to create and diagnose a tunnel."]
+        actions: ["Enable quick hosting to create and diagnose a tunnel."],
+        fixes: [
+          {
+            id: "enable_quick_hosting",
+            label: "Enable Quick Hosting",
+            description: "Create the managed Playit tunnel for this server."
+          }
+        ]
       };
     }
 
@@ -1252,9 +1512,40 @@ export async function registerApiRoutes(
       }
     }
 
+    const fixes: Array<{ id: string; label: string; description: string }> = [];
+    if (server.status !== "running" && server.status !== "starting") {
+      fixes.push({
+        id: "start_server",
+        label: "Start Server",
+        description: "Tunnel provisioning completes faster once the server is running."
+      });
+    }
+    if (diagnostics?.provider === "playit" && !diagnostics.commandAvailable) {
+      fixes.push({
+        id: "start_tunnel",
+        label: "Install and Start Tunnel",
+        description: "Attempt to auto-install Playit and launch the tunnel."
+      });
+    }
+    if (diagnostics?.provider === "playit" && diagnostics.authConfigured === false) {
+      fixes.push({
+        id: "copy_playit_auth_steps",
+        label: "Copy Auth Steps",
+        description: "Copy the exact steps needed to authenticate the Playit agent."
+      });
+    }
+    if (diagnostics && !diagnostics.endpointAssigned) {
+      fixes.push({
+        id: "refresh_diagnostics",
+        label: "Retry Endpoint Check",
+        description: "Run tunnel diagnostics again and force an endpoint sync attempt."
+      });
+    }
+
     return {
       diagnostics,
-      actions
+      actions,
+      fixes
     };
   });
 
@@ -1598,7 +1889,7 @@ export async function registerApiRoutes(
 
   app.get("/meta", async () => ({
     name: "SimpleServers",
-    version: "0.2.1",
+    version: "0.2.2",
     dataDir: config.dataDir
   }));
 
