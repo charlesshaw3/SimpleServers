@@ -203,7 +203,33 @@ type HardwareProfile = {
   };
 };
 
-const defaultApiBase = "http://127.0.0.1:4010";
+function isHttpUrl(value: string): boolean {
+  return value.startsWith("http://") || value.startsWith("https://");
+}
+
+function resolveDefaultApiBase(): string {
+  const fallback = "http://127.0.0.1:4010";
+  const queryValue = new URLSearchParams(window.location.search).get("apiBase");
+  if (queryValue && isHttpUrl(queryValue)) {
+    return queryValue;
+  }
+
+  const bridgeValue = (
+    window as Window & {
+      simpleServers?: {
+        apiBase?: string;
+      };
+    }
+  ).simpleServers?.apiBase;
+
+  if (bridgeValue && isHttpUrl(bridgeValue)) {
+    return bridgeValue;
+  }
+
+  return fallback;
+}
+
+const defaultApiBase = resolveDefaultApiBase();
 
 export default function App() {
   const [apiBase, setApiBase] = useState(defaultApiBase);

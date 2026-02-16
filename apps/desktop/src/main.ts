@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
@@ -12,8 +13,8 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_API_PORT = process.env.SIMPLESERVERS_PORT ?? "4010";
 const DEFAULT_API_HOST = process.env.SIMPLESERVERS_HOST ?? "127.0.0.1";
-const DEFAULT_API_BASE = `http://${DEFAULT_API_HOST}:${DEFAULT_API_PORT}`;
 const STARTUP_TIMEOUT_MS = 45_000;
+const API_HEALTH_POLL_TIMEOUT_MS = 1_500;
 
 let mainWindow: BrowserWindow | null = null;
 let apiProcess: ChildProcessWithoutNullStreams | null = null;
@@ -62,7 +63,9 @@ async function waitForApiReady(baseUrl: string, timeoutMs = STARTUP_TIMEOUT_MS):
     }
 
     try {
-      const res = await fetch(`${baseUrl}/health`);
+      const res = await fetch(`${baseUrl}/health`, {
+        signal: AbortSignal.timeout(API_HEALTH_POLL_TIMEOUT_MS)
+      });
       if (res.ok) {
         return;
       }
@@ -74,6 +77,40 @@ async function waitForApiReady(baseUrl: string, timeoutMs = STARTUP_TIMEOUT_MS):
   }
 
   throw new Error(`API did not become ready within ${timeoutMs}ms`);
+}
+
+async function probeAvailablePort(host: string, port: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => {
+      resolve(null);
+    });
+    server.listen({ host, port }, () => {
+      const address = server.address();
+      const selectedPort = typeof address === "object" && address ? address.port : port;
+      server.close(() => {
+        resolve(selectedPort);
+      });
+    });
+  });
+}
+
+async function resolveApiPort(host: string): Promise<number> {
+  const requested = Number.parseInt(DEFAULT_API_PORT, 10);
+  const preferredPort = Number.isFinite(requested) && requested > 0 ? requested : 4010;
+
+  const preferred = await probeAvailablePort(host, preferredPort);
+  if (preferred === preferredPort) {
+    return preferredPort;
+  }
+
+  const ephemeral = await probeAvailablePort(host, 0);
+  if (typeof ephemeral === "number" && ephemeral > 0) {
+    writeDesktopLog(`api port ${String(preferredPort)} unavailable, using ${String(ephemeral)}`);
+    return ephemeral;
+  }
+
+  throw new Error("Unable to acquire a local API port");
 }
 
 async function loadBootScreen(title: string, detail: string): Promise<void> {
@@ -152,7 +189,7 @@ async function loadBootScreen(title: string, detail: string): Promise<void> {
   await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 
-function startEmbeddedApi(): void {
+function startEmbeddedApi(port: number): void {
   const apiEntry = resolveApiEntry();
   if (!fs.existsSync(apiEntry)) {
     throw new Error(`API entry not found: ${apiEntry}. Run desktop build first.`);
@@ -168,7 +205,7 @@ function startEmbeddedApi(): void {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
       SIMPLESERVERS_HOST: DEFAULT_API_HOST,
-      SIMPLESERVERS_PORT: DEFAULT_API_PORT,
+      SIMPLESERVERS_PORT: String(port),
       SIMPLESERVERS_DATA_DIR: dataDir
     },
     stdio: "pipe",
@@ -302,21 +339,37 @@ async function createMainWindow(): Promise<void> {
   await loadBootScreen("Starting SimpleServers", "Preparing local server services and dashboard...");
 }
 
-async function loadMainRenderer(): Promise<void> {
+function toRendererUrlWithApiBase(rendererUrl: string, apiBase: string): string {
+  try {
+    const url = new URL(rendererUrl);
+    url.searchParams.set("apiBase", apiBase);
+    return url.toString();
+  } catch {
+    const delim = rendererUrl.includes("?") ? "&" : "?";
+    return `${rendererUrl}${delim}apiBase=${encodeURIComponent(apiBase)}`;
+  }
+}
+
+async function loadMainRendererWithApiBase(apiBase: string): Promise<void> {
   if (!mainWindow) {
     return;
   }
 
   const devMode = isDevMode();
   const rendererDevUrl = process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5174";
+  const rendererUrl = toRendererUrlWithApiBase(rendererDevUrl, apiBase);
 
   if (devMode && rendererDevUrl) {
-    await mainWindow.loadURL(rendererDevUrl);
+    await mainWindow.loadURL(rendererUrl);
     mainWindow.webContents.openDevTools({ mode: "detach" });
     return;
   }
 
-  await mainWindow.loadFile(resolveRendererIndex());
+  await mainWindow.loadFile(resolveRendererIndex(), {
+    query: {
+      apiBase
+    }
+  });
 }
 
 async function handleBootFailure(error: unknown): Promise<void> {
@@ -375,11 +428,13 @@ async function boot(): Promise<void> {
 
   await createMainWindow();
   try {
-    startEmbeddedApi();
+    const apiPort = await resolveApiPort(DEFAULT_API_HOST);
+    const apiBase = `http://${DEFAULT_API_HOST}:${String(apiPort)}`;
+    startEmbeddedApi(apiPort);
     configureAutoUpdates();
-    await waitForApiReady(DEFAULT_API_BASE);
+    await waitForApiReady(apiBase);
     writeDesktopLog("api ready; loading renderer");
-    await loadMainRenderer();
+    await loadMainRendererWithApiBase(apiBase);
     writeDesktopLog("renderer loaded");
   } catch (error) {
     await handleBootFailure(error);
