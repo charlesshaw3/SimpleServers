@@ -26,7 +26,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
-  fs.rmSync(testDataDir, { recursive: true, force: true });
+  fs.rmSync(testDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe("api integration", () => {

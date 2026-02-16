@@ -8,6 +8,12 @@ export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
+export function closeDb(): void {
+  if (db.open) {
+    db.close();
+  }
+}
+
 export function migrate(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (

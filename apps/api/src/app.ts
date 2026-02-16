@@ -2,7 +2,7 @@ import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
-import { migrate } from "./lib/db.js";
+import { closeDb, migrate } from "./lib/db.js";
 import { loadConfig, type AppConfig } from "./lib/config.js";
 import { store } from "./repositories/store.js";
 import { registerApiRoutes } from "./routes/api.js";
@@ -192,6 +192,7 @@ export async function createApiApp(options?: {
   app.addHook("onClose", async () => {
     alerts.stop();
     backupRetention.stop();
+    closeDb();
   });
 
   return {
