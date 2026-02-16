@@ -95,6 +95,11 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.1.11`
+  - Fixed dashboard POST behavior for bodyless actions (for example `Stop`) by omitting `content-type: application/json` when no request body is sent.
+  - Added clearer status visibility and action guardrails (connection state, server status badges, disabled invalid lifecycle actions).
+  - Added explicit quick-host tunnel pending/running feedback and stronger empty-state guidance.
+  - Added SquidServers parity research notes in `docs/SQUID_PARITY.md`.
 - `v0.1.10`
   - Reworked web dashboard IA into focused views (`Overview`, `Setup`, `Manage`, `Content`, `Advanced`).
   - Added progressive disclosure with a Power mode toggle so first-time users are not overloaded by advanced controls.

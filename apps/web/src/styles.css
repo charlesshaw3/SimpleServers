@@ -72,6 +72,14 @@ a {
   max-width: 58ch;
 }
 
+.hero-meta {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .auth-box {
   min-width: min(420px, 100%);
   display: grid;
@@ -125,6 +133,13 @@ a {
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.context-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .stats-grid {
@@ -252,6 +267,43 @@ button:disabled {
   font-size: 0.92rem;
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  line-height: 1.2;
+}
+
+.tone-ok {
+  background: #d9f4ea;
+  color: #085b45;
+  border-color: #aee5d1;
+}
+
+.tone-warn {
+  background: #fff1da;
+  color: #7d4c10;
+  border-color: #f2d39a;
+}
+
+.tone-error {
+  background: #fde7e4;
+  color: #8a2319;
+  border-color: #f1beb7;
+}
+
+.tone-neutral {
+  background: #edf3ee;
+  color: #465452;
+  border-color: #d3ddd6;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -343,6 +395,20 @@ th {
 .list li div {
   display: grid;
   gap: 3px;
+}
+
+.tip-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.empty-table-note {
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .resolved {

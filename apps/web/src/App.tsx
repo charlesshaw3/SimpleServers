@@ -205,6 +205,48 @@ type HardwareProfile = {
 
 type AppView = "overview" | "setup" | "manage" | "content" | "advanced";
 
+type ViewerIdentity = {
+  username: string;
+  role: UserRecord["role"] | null;
+};
+
+function normalizeStatus(value: string | null | undefined): string {
+  return (value ?? "unknown").toLowerCase();
+}
+
+function isServerRunning(status: string | null | undefined): boolean {
+  return normalizeStatus(status) === "running";
+}
+
+function isServerTransitioning(status: string | null | undefined): boolean {
+  const normalized = normalizeStatus(status);
+  return normalized === "starting" || normalized === "stopping" || normalized === "provisioning" || normalized === "pending";
+}
+
+function canStartServer(status: string | null | undefined): boolean {
+  const normalized = normalizeStatus(status);
+  return normalized !== "running" && normalized !== "starting" && normalized !== "provisioning";
+}
+
+function canStopServer(status: string | null | undefined): boolean {
+  const normalized = normalizeStatus(status);
+  return normalized !== "stopped" && normalized !== "stopping";
+}
+
+function statusTone(status: string | null | undefined): "ok" | "warn" | "error" | "neutral" {
+  const normalized = normalizeStatus(status);
+  if (normalized === "running") {
+    return "ok";
+  }
+  if (normalized === "crashed" || normalized === "error" || normalized === "failed") {
+    return "error";
+  }
+  if (isServerTransitioning(normalized)) {
+    return "warn";
+  }
+  return "neutral";
+}
+
 function isHttpUrl(value: string): boolean {
   return value.startsWith("http://") || value.startsWith("https://");
 }
@@ -323,6 +365,8 @@ export default function App() {
   });
   const [activeView, setActiveView] = useState<AppView>("overview");
   const [powerMode, setPowerMode] = useState(false);
+  const [viewer, setViewer] = useState<ViewerIdentity | null>(null);
+  const [hasSearchedContent, setHasSearchedContent] = useState(false);
 
   const api = useRef(new ApiClient(defaultApiBase, token));
   const logSocketRef = useRef<WebSocket | null>(null);
@@ -405,12 +449,14 @@ export default function App() {
   async function connect(): Promise<void> {
     try {
       setClientAuth();
-      await api.current.get<{ user: { username: string } }>("/me");
+      const me = await api.current.get<{ user: { username: string; role?: UserRecord["role"] } }>("/me");
+      setViewer({ username: me.user.username, role: me.user.role ?? null });
       setConnected(true);
       setError(null);
       await refreshAll();
     } catch (e) {
       setConnected(false);
+      setViewer(null);
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -555,6 +601,7 @@ export default function App() {
     }
 
     try {
+      setHasSearchedContent(true);
       const query = new URLSearchParams({
         provider: contentForm.provider,
         q: contentForm.query,
@@ -650,6 +697,11 @@ export default function App() {
   }, [connected, selectedServerId, liveConsole]);
 
   useEffect(() => {
+    setHasSearchedContent(false);
+    setContentResults([]);
+  }, [selectedServerId]);
+
+  useEffect(() => {
     if (!connected || !selectedServerId || !liveConsole) {
       disconnectLogStream();
       return;
@@ -677,6 +729,17 @@ export default function App() {
   const unresolvedAlerts = useMemo(() => {
     return alerts.filter((entry) => !entry.resolvedAt);
   }, [alerts]);
+
+  const selectedServerStatus = normalizeStatus(selectedServer?.status);
+  const selectedCanStart = canStartServer(selectedServerStatus);
+  const selectedCanStop = canStopServer(selectedServerStatus);
+
+  const quickTunnelStatus = normalizeStatus(quickHostingStatus?.tunnel?.status);
+  const quickHostPending = Boolean(
+    quickHostingStatus &&
+      !quickHostingStatus.publicAddress &&
+      (quickTunnelStatus === "starting" || quickTunnelStatus === "pending" || quickTunnelStatus === "idle")
+  );
 
   function applyPreset(preset: "custom" | "survival" | "modded" | "minigame"): void {
     setCreateServer((previous) => {
@@ -1024,6 +1087,15 @@ export default function App() {
         <div>
           <h1>SimpleServers</h1>
           <p>Host Minecraft servers without getting buried in infrastructure settings.</p>
+          <div className="hero-meta">
+            <span className={`status-pill ${connected ? "tone-ok" : "tone-warn"}`}>{connected ? "Connected" : "Disconnected"}</span>
+            {viewer ? (
+              <span className="muted-note">
+                Signed in as <strong>{viewer.username}</strong>
+                {viewer.role ? ` (${viewer.role})` : ""}
+              </span>
+            ) : null}
+          </div>
         </div>
         <form
           className="auth-box"
@@ -1084,6 +1156,19 @@ export default function App() {
               ? `${selectedServer.name} (${selectedServer.type} ${selectedServer.mcVersion})`
               : "No server selected yet. Create one from Setup or use Instant Launch."}
           </p>
+          {selectedServer ? (
+            <div className="context-meta">
+              <span className={`status-pill tone-${statusTone(selectedServerStatus)}`}>{selectedServerStatus}</span>
+              <span className="muted-note">
+                Java port <code>{selectedServer.port}</code>
+              </span>
+              {quickHostingStatus?.publicAddress ? (
+                <span className="muted-note">
+                  Public <code>{quickHostingStatus.publicAddress}</code>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="inline-actions">
           <label className="compact-field">
@@ -1099,13 +1184,13 @@ export default function App() {
           </label>
           {selectedServerId ? (
             <>
-              <button type="button" onClick={() => void serverAction(selectedServerId, "start")}>
+              <button type="button" onClick={() => void serverAction(selectedServerId, "start")} disabled={!selectedCanStart}>
                 Start
               </button>
-              <button type="button" onClick={() => void serverAction(selectedServerId, "stop")}>
+              <button type="button" onClick={() => void serverAction(selectedServerId, "stop")} disabled={!selectedCanStop}>
                 Stop
               </button>
-              <button type="button" onClick={() => void serverAction(selectedServerId, "restart")}>
+              <button type="button" onClick={() => void serverAction(selectedServerId, "restart")} disabled={isServerTransitioning(selectedServerStatus)}>
                 Restart
               </button>
               <button type="button" onClick={() => void createBackup(selectedServerId)}>
@@ -1140,6 +1225,7 @@ export default function App() {
             <article className="panel">
               <h2>Fast Launch</h2>
               <p className="muted-note">Best for first-time setup. This creates, starts, and publishes your server in one flow.</p>
+              <p className="muted-note">Local-first behavior: your server stays online while this machine and app are running.</p>
               <div className="inline-actions">
                 <button onClick={() => void quickStartNow()} disabled={busy} type="button">
                   {busy ? "Working..." : "Instant Launch (Recommended)"}
@@ -1161,9 +1247,18 @@ export default function App() {
                 <p className="muted-note">
                   Public: <code>{quickHostingStatus?.publicAddress ?? "not enabled yet"}</code>
                 </p>
+                {quickHostingStatus?.tunnel ? (
+                  <p className="muted-note">
+                    Tunnel: <code>{quickHostingStatus.tunnel.provider}</code> /{" "}
+                    <span className={`status-pill tone-${statusTone(quickHostingStatus.tunnel.status)}`}>{normalizeStatus(quickHostingStatus.tunnel.status)}</span>
+                  </p>
+                ) : null}
+                {quickHostPending ? (
+                  <p className="muted-note">Public tunnel is still provisioning. Keep this page open or hit Refresh in a few seconds.</p>
+                ) : null}
                 <div className="inline-actions">
                   {selectedServerId ? (
-                    <button onClick={() => void enableQuickHosting()} type="button">
+                    <button onClick={() => void enableQuickHosting()} type="button" disabled={Boolean(quickHostingStatus?.quickHostReady)}>
                       Enable Public Hosting
                     </button>
                   ) : null}
@@ -1178,6 +1273,11 @@ export default function App() {
 
             <article className="panel">
               <h2>Action Queue</h2>
+              <ul className="tip-list">
+                <li>1. Launch from `Setup` with a preset.</li>
+                <li>2. Wait until tunnel status becomes running.</li>
+                <li>3. Share the public address from the Overview card.</li>
+              </ul>
               <ul className="list">
                 {(quickHostingStatus?.steps ?? []).length > 0 ? (
                   (quickHostingStatus?.steps ?? []).map((step) => (
@@ -1234,17 +1334,23 @@ export default function App() {
                     </td>
                     <td>{server.type}</td>
                     <td>{server.mcVersion}</td>
-                    <td>{server.status}</td>
+                    <td>
+                      <span className={`status-pill tone-${statusTone(server.status)}`}>{normalizeStatus(server.status)}</span>
+                    </td>
                     <td>{server.port}</td>
                     <td>
                       <div className="inline-actions">
-                        <button onClick={() => void serverAction(server.id, "start")} type="button">
+                        <button onClick={() => void serverAction(server.id, "start")} type="button" disabled={!canStartServer(server.status)}>
                           Start
                         </button>
-                        <button onClick={() => void serverAction(server.id, "stop")} type="button">
+                        <button onClick={() => void serverAction(server.id, "stop")} type="button" disabled={!canStopServer(server.status)}>
                           Stop
                         </button>
-                        <button onClick={() => void serverAction(server.id, "restart")} type="button">
+                        <button
+                          onClick={() => void serverAction(server.id, "restart")}
+                          type="button"
+                          disabled={isServerTransitioning(server.status)}
+                        >
                           Restart
                         </button>
                         <button onClick={() => void createBackup(server.id)} type="button">
@@ -1254,6 +1360,13 @@ export default function App() {
                     </td>
                   </tr>
                 ))}
+                {servers.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <div className="empty-table-note">No servers yet. Open `Setup` and run Instant Launch to create your first server.</div>
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </section>
@@ -1404,9 +1517,14 @@ export default function App() {
             {selectedServerId ? (
               <>
                 <div className="inline-actions">
-                  <button onClick={() => void enableQuickHosting()} type="button">
+                  <button onClick={() => void enableQuickHosting()} type="button" disabled={Boolean(quickHostingStatus?.quickHostReady)}>
                     Enable Public Hosting
                   </button>
+                  {selectedServerId ? (
+                    <button onClick={() => void refreshServerOperations(selectedServerId)} type="button">
+                      Refresh Tunnel Status
+                    </button>
+                  ) : null}
                   {quickHostingStatus?.publicAddress ? (
                     <button onClick={() => copyAddress(quickHostingStatus.publicAddress ?? "")} type="button">
                       Copy Public Address
@@ -1424,6 +1542,15 @@ export default function App() {
                 <p className="muted-note">
                   Public: <code>{quickHostingStatus?.publicAddress ?? "not enabled yet"}</code>
                 </p>
+                {quickHostingStatus?.tunnel ? (
+                  <p className="muted-note">
+                    Tunnel: <code>{quickHostingStatus.tunnel.provider}</code> /{" "}
+                    <span className={`status-pill tone-${statusTone(quickHostingStatus.tunnel.status)}`}>{normalizeStatus(quickHostingStatus.tunnel.status)}</span>
+                  </p>
+                ) : null}
+                {quickHostPending ? (
+                  <p className="muted-note">Tunnel is pending. It can take a short time for providers like Playit to assign a public endpoint.</p>
+                ) : null}
                 <ul className="list">
                   {(quickHostingStatus?.steps ?? ["Enable quick hosting to publish your server without router setup."]).map((step) => (
                     <li key={step}>
@@ -1764,6 +1891,14 @@ export default function App() {
                   </button>
                 </li>
               ))}
+              {hasSearchedContent && contentResults.length === 0 ? (
+                <li>
+                  <div>
+                    <strong>No results found</strong>
+                    <span>Try a different keyword, switch provider, or use another package type.</span>
+                  </div>
+                </li>
+              ) : null}
             </ul>
           </article>
 

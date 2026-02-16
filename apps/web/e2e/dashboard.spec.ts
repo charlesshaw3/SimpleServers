@@ -3,6 +3,8 @@ import { test, expect } from "@playwright/test";
 test("connects and renders dashboard sections", async ({ page }) => {
   let installCalled = false;
   let quickStartCalled = false;
+  let stopCalled = false;
+  let stopUsedEmptyJsonHeader = false;
 
   await page.route("http://127.0.0.1:4010/**", async (route) => {
     const request = route.request();
@@ -52,7 +54,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
             bedrockPort: null,
             minMemoryMb: 1024,
             maxMemoryMb: 4096,
-            status: "stopped",
+            status: "running",
             createdAt: new Date().toISOString()
           }
         ]
@@ -87,6 +89,24 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/servers/srv_1/stop" && method === "POST") {
+      stopCalled = true;
+      const contentType = request.headers()["content-type"] ?? "";
+      const body = request.postData();
+      if (contentType.includes("application/json") && !body) {
+        stopUsedEmptyJsonHeader = true;
+        await withJson(400, {
+          statusCode: 400,
+          code: "FST_ERR_CTP_EMPTY_JSON_BODY",
+          error: "Bad Request",
+          message: "Body cannot be empty when content-type is set to 'application/json'"
+        });
+        return;
+      }
+      await withJson(200, { ok: true });
+      return;
+    }
+
     if (pathname === "/alerts" && method === "GET") {
       await withJson(200, { alerts: [] });
       return;
@@ -109,7 +129,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
     if (pathname === "/system/status" && method === "GET") {
       await withJson(200, {
-        servers: { total: 1, running: 0, crashed: 0 },
+        servers: { total: 1, running: 1, crashed: 0 },
         alerts: { open: 0, total: 0 }
       });
       return;
@@ -314,6 +334,10 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Server Fleet" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Test Server" })).toBeVisible();
+  await page.getByRole("button", { name: "Stop" }).first().click();
+  await expect.poll(() => stopCalled).toBe(true);
+  await expect.poll(() => stopUsedEmptyJsonHeader).toBe(false);
+
   await page.getByRole("button", { name: "Instant Launch (Recommended)" }).click();
   await expect.poll(() => quickStartCalled).toBe(true);
 

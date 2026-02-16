@@ -22,13 +22,19 @@ export class ApiClient {
   }
 
   async post<T>(path: string, body?: unknown): Promise<T> {
+    const hasBody = body !== undefined;
+    const headers: Record<string, string> = {
+      "x-api-token": this.token
+    };
+
+    if (hasBody) {
+      headers["content-type"] = "application/json";
+    }
+
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-token": this.token
-      },
-      body: body ? JSON.stringify(body) : undefined
+      headers,
+      body: hasBody ? JSON.stringify(body) : undefined
     });
 
     if (!response.ok) {

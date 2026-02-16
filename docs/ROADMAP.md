@@ -39,6 +39,12 @@ All roadmap milestones through `v1.0.0` are implemented in this repository and v
 - Added progressive disclosure via Power mode for advanced operator tooling.
 - Added persistent active-server context and quick actions across views.
 
+## Implemented in v0.1.11
+
+- Fixed bodyless POST action handling to prevent empty JSON body request failures.
+- Added stronger lifecycle/tunnel status visibility and guardrails in the dashboard UX.
+- Added research-backed SquidServers parity notes and implementation mapping.
+
 ## Next Track (Post-1.0)
 
 - Provider-level dependency graph resolution for mod/plugin compatibility.
