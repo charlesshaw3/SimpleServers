@@ -538,6 +538,15 @@ export const store = {
     db.prepare("UPDATE tunnels SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), id);
   },
 
+  updateTunnelEndpoint(id: string, input: { publicHost: string; publicPort: number }): void {
+    db.prepare("UPDATE tunnels SET public_host = ?, public_port = ?, updated_at = ? WHERE id = ?").run(
+      input.publicHost,
+      input.publicPort,
+      nowIso(),
+      id
+    );
+  },
+
   listServerPackages(serverId: string): ServerPackageRecord[] {
     const rows = db
       .prepare("SELECT * FROM server_packages WHERE server_id = ? ORDER BY installed_at DESC")

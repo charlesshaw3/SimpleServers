@@ -87,6 +87,11 @@ Allowed files:
 - `POST /servers/:id/public-hosting/quick-enable` (`admin`)
 - `GET /servers/:id/public-hosting/status`
 
+Notes:
+
+- Playit-backed tunnels now synchronize assigned public host/port from Playit run data.
+- `publicAddress` remains `null` while Playit is still assigning an endpoint (`pending`/`starting` states).
+
 ## Tasks
 
 - `GET /tasks`

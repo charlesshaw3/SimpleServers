@@ -99,6 +99,7 @@ a {
   border-radius: var(--radius);
   padding: 16px;
   box-shadow: 0 10px 24px rgba(3, 10, 20, 0.35);
+  animation: panel-rise 280ms ease both;
 }
 
 .panel h2,
@@ -428,11 +429,17 @@ th {
   display: flex;
   justify-content: space-between;
   gap: 10px;
+  transition: border-color 0.14s ease, transform 0.14s ease;
 }
 
 .list li div {
   display: grid;
   gap: 3px;
+}
+
+.list li:hover {
+  border-color: #4e6d90;
+  transform: translateY(-1px);
 }
 
 .tip-list {
@@ -551,6 +558,18 @@ th {
 
   .file-list {
     max-height: 260px;
+  }
+}
+
+@keyframes panel-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

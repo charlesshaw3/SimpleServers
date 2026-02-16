@@ -61,6 +61,13 @@ All roadmap milestones through `v1.0.0` are implemented in this repository and v
 - Improved setup and server library workflows to make multi-server creation, switching, and deletion easier.
 - Refreshed dashboard visual system with stronger hierarchy and improved readability across desktop/mobile.
 
+## Implemented in v0.1.14
+
+- Added Playit endpoint sync logic that refreshes tunnel public host/port from Playit API metadata.
+- Added clearer quick-host pending vs ready behavior so unresolved Playit placeholders are no longer shown as final addresses.
+- Improved overview/setup UX with server search, hosting journey guidance, and stronger visual feedback.
+- Hardened Playit sync behavior to avoid expensive binary install attempts during simple status polling.
+
 ## Next Track (Post-1.0)
 
 - Provider-level dependency graph resolution for mod/plugin compatibility.

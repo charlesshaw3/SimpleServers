@@ -382,6 +382,7 @@ export default function App() {
   const [powerMode, setPowerMode] = useState(false);
   const [viewer, setViewer] = useState<ViewerIdentity | null>(null);
   const [hasSearchedContent, setHasSearchedContent] = useState(false);
+  const [serverSearch, setServerSearch] = useState("");
 
   const api = useRef(new ApiClient(defaultApiBase, token));
   const logSocketRef = useRef<WebSocket | null>(null);
@@ -756,6 +757,32 @@ export default function App() {
     return alerts.filter((entry) => !entry.resolvedAt);
   }, [alerts]);
 
+  const filteredServers = useMemo(() => {
+    const query = serverSearch.trim().toLowerCase();
+    if (!query) {
+      return servers;
+    }
+    return servers.filter((server) => {
+      return (
+        server.name.toLowerCase().includes(query) ||
+        server.type.toLowerCase().includes(query) ||
+        server.mcVersion.toLowerCase().includes(query) ||
+        String(server.port).includes(query)
+      );
+    });
+  }, [servers, serverSearch]);
+
+  const serverSelectorOptions = useMemo(() => {
+    if (!selectedServerId) {
+      return filteredServers;
+    }
+    if (filteredServers.some((server) => server.id === selectedServerId)) {
+      return filteredServers;
+    }
+    const selected = servers.find((server) => server.id === selectedServerId);
+    return selected ? [selected, ...filteredServers] : filteredServers;
+  }, [filteredServers, selectedServerId, servers]);
+
   const filteredEditorFiles = useMemo(() => {
     const query = editorSearch.trim().toLowerCase();
     if (!query) {
@@ -769,6 +796,35 @@ export default function App() {
   const selectedServerStatus = normalizeStatus(selectedServer?.status);
   const selectedCanStart = canStartServer(selectedServerStatus);
   const selectedCanStop = canStopServer(selectedServerStatus);
+
+  const launchChecklist = useMemo(() => {
+    const hasServer = servers.length > 0;
+    const running = isServerRunning(selectedServerStatus);
+    const hasPublicAddress = Boolean(quickHostingStatus?.publicAddress);
+
+    return [
+      {
+        id: "server",
+        label: "Create your server",
+        done: hasServer,
+        detail: hasServer ? "A server environment exists." : "Use Instant Launch or Guided Setup to create one."
+      },
+      {
+        id: "runtime",
+        label: "Start the server runtime",
+        done: running,
+        detail: running ? "Server process is running." : "Start the selected server from Active Server controls."
+      },
+      {
+        id: "public",
+        label: "Resolve public tunnel address",
+        done: hasPublicAddress,
+        detail: hasPublicAddress
+          ? `Public endpoint ready: ${quickHostingStatus?.publicAddress}`
+          : "Enable quick hosting and wait for Playit to assign an endpoint."
+      }
+    ];
+  }, [servers.length, selectedServerStatus, quickHostingStatus?.publicAddress]);
 
   const quickTunnelStatus = normalizeStatus(quickHostingStatus?.tunnel?.status);
   const quickHostPending = Boolean(
@@ -1360,10 +1416,14 @@ export default function App() {
         </div>
         <div className="inline-actions">
           <label className="compact-field">
+            Search Servers
+            <input value={serverSearch} onChange={(e) => setServerSearch(e.target.value)} placeholder="name, version, port..." />
+          </label>
+          <label className="compact-field">
             Server
             <select value={selectedServerId ?? ""} onChange={(e) => setSelectedServerId(e.target.value || null)} disabled={servers.length === 0}>
               {servers.length === 0 ? <option value="">No servers yet</option> : null}
-              {servers.map((server) => (
+              {serverSelectorOptions.map((server) => (
                 <option key={server.id} value={server.id}>
                   {server.name}
                 </option>
@@ -1443,7 +1503,7 @@ export default function App() {
                   Local: <code>{quickHostingStatus?.server.localAddress ?? "unknown"}</code>
                 </p>
                 <p className="muted-note">
-                  Public: <code>{quickHostingStatus?.publicAddress ?? "not enabled yet"}</code>
+                  Public: <code>{quickHostingStatus?.publicAddress ?? (quickHostPending ? "resolving..." : "not enabled yet")}</code>
                 </p>
                 {quickHostingStatus?.tunnel ? (
                   <p className="muted-note">
@@ -1510,6 +1570,22 @@ export default function App() {
           </section>
 
           <section className="panel">
+            <h2>Hosting Journey</h2>
+            <p className="muted-note">Follow this flow to get from setup to a shareable multiplayer address with fewer dead ends.</p>
+            <ul className="list">
+              {launchChecklist.map((step) => (
+                <li key={step.id}>
+                  <div>
+                    <strong>{step.label}</strong>
+                    <span>{step.detail}</span>
+                  </div>
+                  <span className={`status-pill ${step.done ? "tone-ok" : "tone-warn"}`}>{step.done ? "Done" : "Pending"}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="panel">
             <h2>Server Fleet</h2>
             <table>
               <thead>
@@ -1523,7 +1599,7 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {servers.map((server) => (
+                {filteredServers.map((server) => (
                   <tr key={server.id} className={server.id === selectedServerId ? "selected" : ""}>
                     <td>
                       <button className="link-btn" onClick={() => setSelectedServerId(server.id)} type="button">
@@ -1570,6 +1646,12 @@ export default function App() {
                   <tr>
                     <td colSpan={6}>
                       <div className="empty-table-note">No servers yet. Open `Setup` and run Instant Launch to create your first server.</div>
+                    </td>
+                  </tr>
+                ) : filteredServers.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <div className="empty-table-note">No servers matched your search.</div>
                     </td>
                   </tr>
                 ) : null}
@@ -1737,7 +1819,7 @@ export default function App() {
             <h2>Server Library</h2>
             <p className="muted-note">Create and run multiple servers. Use this list to quickly switch context or remove old environments.</p>
             <ul className="list">
-              {servers.map((server) => (
+              {filteredServers.map((server) => (
                 <li key={server.id}>
                   <div>
                     <strong>{server.name}</strong>
@@ -1766,6 +1848,13 @@ export default function App() {
                   <div>
                     <strong>No servers yet</strong>
                     <span>Use Instant Launch above or the full setup form to create your first server.</span>
+                  </div>
+                </li>
+              ) : filteredServers.length === 0 ? (
+                <li>
+                  <div>
+                    <strong>No matches</strong>
+                    <span>Adjust your server search to view and manage additional servers.</span>
                   </div>
                 </li>
               ) : null}
@@ -1800,7 +1889,7 @@ export default function App() {
                   Local: <code>{quickHostingStatus?.server.localAddress ?? "unknown"}</code>
                 </p>
                 <p className="muted-note">
-                  Public: <code>{quickHostingStatus?.publicAddress ?? "not enabled yet"}</code>
+                  Public: <code>{quickHostingStatus?.publicAddress ?? (quickHostPending ? "resolving..." : "not enabled yet")}</code>
                 </p>
                 {quickHostingStatus?.tunnel ? (
                   <p className="muted-note">

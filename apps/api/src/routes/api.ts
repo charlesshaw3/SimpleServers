@@ -699,6 +699,10 @@ export async function registerApiRoutes(
       if (started) {
         try {
           await deps.tunnels.startTunnel(tunnel.id);
+          const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+          if (syncResult.pendingReason) {
+            quickHostingWarning = quickHostingWarning ? `${quickHostingWarning}; ${syncResult.pendingReason}` : syncResult.pendingReason;
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           quickHostingWarning = message;
@@ -1122,6 +1126,10 @@ export async function registerApiRoutes(
     if (server.status === "running" || server.status === "starting") {
       try {
         await deps.tunnels.startTunnel(tunnel.id);
+        const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+        if (syncResult.pendingReason) {
+          warning = warning ? `${warning}; ${syncResult.pendingReason}` : syncResult.pendingReason;
+        }
       } catch (error) {
         warning = error instanceof Error ? error.message : String(error);
       }
@@ -1146,10 +1154,22 @@ export async function registerApiRoutes(
       throw app.httpErrors.notFound("Server not found");
     }
 
+    const existingTunnels = deps.tunnels.listTunnels(id);
+    await Promise.all(
+      existingTunnels
+        .filter((tunnel) => tunnel.provider === "playit")
+        .map((tunnel) =>
+          deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id).catch(() => ({
+            synced: false
+          }))
+        )
+    );
+
     const tunnels = deps.tunnels.listTunnels(id);
     const activeTunnel = tunnels.find((tunnel) => tunnel.status === "active") ?? tunnels[0] ?? null;
     const readiness = activeTunnel ? deps.tunnels.getTunnelLaunchReadiness(activeTunnel) : null;
     const localAddress = `127.0.0.1:${String(server.port)}`;
+    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
     return {
       server: {
         id: server.id,
@@ -1157,14 +1177,14 @@ export async function registerApiRoutes(
         status: server.status,
         localAddress
       },
-      quickHostReady: Boolean(activeTunnel && readiness?.ok),
-      publicAddress: activeTunnel ? `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}` : null,
+      quickHostReady: Boolean(activeTunnel && readiness?.ok && hasResolvedPublicAddress),
+      publicAddress: hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null,
       tunnel: activeTunnel,
       steps: activeTunnel
-        ? readiness?.ok
+        ? readiness?.ok && hasResolvedPublicAddress
           ? ["Share the public address with players.", "Keep this app running while hosting."]
           : [
-              readiness?.reason ?? "Tunnel dependency missing.",
+              hasResolvedPublicAddress ? readiness?.reason ?? "Tunnel dependency missing." : "Playit is still assigning a public endpoint.",
               "Start your server to let SimpleServers provision tunnel dependencies automatically, or install the client manually."
             ]
         : [
@@ -1416,7 +1436,7 @@ export async function registerApiRoutes(
 
   app.get("/meta", async () => ({
     name: "SimpleServers",
-    version: "0.1.13",
+    version: "0.1.14",
     dataDir: config.dataDir
   }));
 

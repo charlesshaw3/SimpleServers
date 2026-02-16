@@ -339,7 +339,8 @@ describe("api integration", () => {
     expect(status.statusCode).toBe(200);
     expect(status.json().server.id).toBe(quickHostServer.id);
     expect(status.json().server.localAddress).toBe("127.0.0.1:25592");
-    expect(status.json().publicAddress).toContain("pending.playit.gg");
+    expect(status.json().publicAddress).toBeNull();
+    expect(status.json().steps[0]).toContain("assigning a public endpoint");
   });
 
   it("deletes a server and removes local files and backup archives", async () => {

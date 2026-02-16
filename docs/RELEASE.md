@@ -95,6 +95,11 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.1.14`
+  - Added Playit tunnel endpoint synchronization so dashboard/public-hosting status can resolve real assigned public addresses.
+  - Added safer quick-hosting state behavior so unresolved placeholders remain pending instead of presenting as final endpoints.
+  - Improved dashboard UX with server search/filter, hosting journey guidance, and stronger visual interactions.
+  - Optimized Playit status refresh logic to avoid heavyweight binary installation attempts during status polling.
 - `v0.1.13`
   - Added API and UI support for deleting servers, including runtime/tunnel shutdown and cleanup of local server files/backups.
   - Added new in-app file-browser endpoints for editable text configs and wired them into the Advanced workspace editor.
