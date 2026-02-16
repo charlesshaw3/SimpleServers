@@ -23,6 +23,7 @@ Base URL: `http://127.0.0.1:4010`
 - `GET /system/java/channels`
 - `GET /system/status`
 - `GET /system/hardware`
+- `GET /system/trust`
 
 `GET /setup/presets` returns the guided setup profiles:
 - `custom`
@@ -41,6 +42,7 @@ Base URL: `http://127.0.0.1:4010`
 - `GET /servers`
 - `POST /servers` (`admin`)
 - `POST /servers/quickstart` (`admin`, one-call create + optional start + optional quick-host enable)
+- `POST /servers/bulk-action` (`admin`, actions: `start`, `stop`, `restart`, `backup`, `goLive`)
 - `DELETE /servers/:id?deleteFiles=<bool>&deleteBackups=<bool>` (`admin`, defaults `true/true`)
 - `POST /servers/:id/start` (`moderator`)
 - `POST /servers/:id/stop` (`moderator`)
@@ -50,6 +52,7 @@ Base URL: `http://127.0.0.1:4010`
 - `POST /servers/:id/command` (`moderator`)
 - `GET /servers/:id/logs`
 - `GET /servers/:id/preflight`
+- `GET /servers/:id/performance/advisor?hours=<1-336>`
 - `POST /servers/:id/preflight/repair-core` (`admin`, requires stopped server)
 - `GET /servers/:id/support-bundle`
 - `GET /servers/:id/log-stream` (websocket; auth via `Sec-WebSocket-Protocol: ss-token.<base64url-token>` or query `token`)
@@ -61,6 +64,14 @@ Base URL: `http://127.0.0.1:4010`
 - port `25565`
 - `startServer=true`
 - `publicHosting=true`
+
+`POST /servers/bulk-action` response includes per-server status results, plus aggregate `total/succeeded/failed`.
+
+`GET /servers/:id/performance/advisor` returns:
+- sampled CPU/RAM aggregates for the selected window
+- startup duration trend (`improving`, `stable`, `regressing`, `insufficient_data`)
+- parsed tick-lag events from runtime logs
+- prioritized advisor hints (`ok`, `warning`, `critical`)
 
 ## File Editing
 

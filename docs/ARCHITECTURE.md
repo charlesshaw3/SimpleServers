@@ -37,6 +37,9 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - `crash_reports`: structured crash bundle references.
 - `ux_telemetry_events`: local dashboard funnel telemetry for UX conversion analysis.
 - `editor_file_snapshots`: API-backed rollback history for in-app config editing.
+- `server_performance_samples`: periodic CPU/RAM samples captured for running servers.
+- `server_startup_events`: startup duration + outcome history per server.
+- `server_tick_lag_events`: parsed tick-lag incidents from runtime logs.
 
 ## Runtime Flows
 
@@ -89,6 +92,18 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - `Go Live` API (`/servers/:id/go-live`) combines lifecycle start + quick-host activation for one-click publishing.
 - Tunnel diagnostics expose fix metadata (`fixes`) for one-click recovery actions in the dashboard.
 - Crash Doctor UI runbook chains core-file repair, config snapshot rollback, and safe restart actions.
+
+9. Fleet operations
+
+- Bulk server actions (`/servers/bulk-action`) execute lifecycle/backup/publish operations across selected servers.
+- Results are returned per server so UI can show partial success without hiding failures.
+
+10. Performance advisor + trust transparency
+
+- Alert monitor samples CPU/RAM on a fixed interval and stores rolling window data.
+- Runtime parser captures tick-lag events from console output and startup timings from launch flow.
+- Advisor endpoint (`/servers/:id/performance/advisor`) computes trends + recommendation hints for non-expert operators.
+- Trust endpoint (`/system/trust`) reports build provenance, signature state, verification links, and active security controls.
 
 ## Provider Integrations
 

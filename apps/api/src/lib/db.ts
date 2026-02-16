@@ -172,5 +172,44 @@ export function migrate(): void {
 
     CREATE INDEX IF NOT EXISTS idx_editor_file_snapshots_server_path_created
       ON editor_file_snapshots(server_id, path, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS server_performance_samples (
+      id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      cpu_percent REAL NOT NULL,
+      memory_mb REAL NOT NULL,
+      sampled_at TEXT NOT NULL,
+      FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_server_perf_samples_server_sampled
+      ON server_performance_samples(server_id, sampled_at DESC);
+
+    CREATE TABLE IF NOT EXISTS server_startup_events (
+      id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      success INTEGER NOT NULL,
+      exit_code INTEGER,
+      detail TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_server_startup_events_server_created
+      ON server_startup_events(server_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS server_tick_lag_events (
+      id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      lag_ms INTEGER NOT NULL,
+      ticks_behind INTEGER NOT NULL,
+      line TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_server_tick_lag_events_server_created
+      ON server_tick_lag_events(server_id, created_at DESC);
   `);
 }

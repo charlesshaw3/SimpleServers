@@ -295,11 +295,123 @@ type GoLiveResult = {
 type ExperienceMode = "beginner" | "advanced";
 type ThemePreference = "colorful" | "dark" | "light" | "system";
 
-type AppView = "overview" | "setup" | "manage" | "content" | "advanced";
+type BulkServerAction = "start" | "stop" | "restart" | "backup" | "goLive";
+
+type BulkServerActionResult = {
+  serverId: string;
+  ok: boolean;
+  blocked?: boolean;
+  warning?: string | null;
+  message: string;
+  publicAddress?: string | null;
+};
+
+type BulkServerActionResponse = {
+  ok: boolean;
+  action: BulkServerAction;
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BulkServerActionResult[];
+};
+
+type PerformanceAdvisorReport = {
+  server: {
+    id: string;
+    name: string;
+    status: string;
+    maxMemoryMb: number;
+  };
+  advisor: {
+    windowHours: number;
+    sampleCount: number;
+    metrics: {
+      latest: {
+        sampledAt: string;
+        cpuPercent: number;
+        memoryMb: number;
+      } | null;
+      cpu: {
+        avgPercent: number;
+        peakPercent: number;
+      };
+      memory: {
+        avgMb: number;
+        peakMb: number;
+        configuredMaxMb: number;
+      };
+    };
+    startup: {
+      trend: "improving" | "stable" | "regressing" | "insufficient_data";
+      recent: Array<{
+        createdAt: string;
+        durationMs: number;
+        success: boolean;
+        exitCode: number | null;
+      }>;
+      averageDurationMs: number | null;
+      latestDurationMs: number | null;
+    };
+    tickLag: {
+      eventsInWindow: number;
+      lastEventAt: string | null;
+      maxLagMs: number;
+      recent: Array<{
+        createdAt: string;
+        lagMs: number;
+        ticksBehind: number;
+        line: string;
+      }>;
+    };
+    hints: Array<{
+      level: "ok" | "warning" | "critical";
+      title: string;
+      detail: string;
+    }>;
+  };
+};
+
+type TrustReport = {
+  generatedAt: string;
+  build: {
+    appVersion: string;
+    platform: string;
+    arch: string;
+    nodeVersion: string;
+    mode: string;
+    signatureStatus: string;
+    signatureProvider: string | null;
+    releaseChannel: string;
+    repository: string;
+  };
+  verification: {
+    checksumUrl: string | null;
+    attestationUrl: string | null;
+  };
+  security: {
+    localOnlyByDefault: boolean;
+    authModel: string;
+    auditTrailEnabled: boolean;
+    remoteControlEnabled: boolean;
+    remoteTokenRequired: boolean;
+    configuredRemoteToken: boolean;
+    allowedOrigins: string[];
+  };
+};
+
+type AppView = "overview" | "setup" | "manage" | "content" | "advanced" | "trust";
 
 type ViewerIdentity = {
   username: string;
   role: UserRecord["role"] | null;
+};
+
+type DesktopBridgeInfo = {
+  apiBase?: string;
+  platform?: string;
+  appVersion?: string;
+  packaged?: boolean;
+  signatureStatus?: string;
 };
 
 function normalizeStatus(value: string | null | undefined): string {
@@ -346,6 +458,14 @@ function isHttpUrl(value: string): boolean {
   return value.startsWith("http://") || value.startsWith("https://");
 }
 
+function readDesktopBridge(): DesktopBridgeInfo | null {
+  return (
+    (window as Window & {
+      simpleServers?: DesktopBridgeInfo;
+    }).simpleServers ?? null
+  );
+}
+
 function resolveDefaultApiBase(): string {
   const fallback = "http://127.0.0.1:4010";
   const queryValue = new URLSearchParams(window.location.search).get("apiBase");
@@ -353,13 +473,7 @@ function resolveDefaultApiBase(): string {
     return queryValue;
   }
 
-  const bridgeValue = (
-    window as Window & {
-      simpleServers?: {
-        apiBase?: string;
-      };
-    }
-  ).simpleServers?.apiBase;
+  const bridgeValue = readDesktopBridge()?.apiBase;
 
   if (bridgeValue && isHttpUrl(bridgeValue)) {
     return bridgeValue;
@@ -643,8 +757,13 @@ export default function App() {
   const [viewer, setViewer] = useState<ViewerIdentity | null>(null);
   const [hasSearchedContent, setHasSearchedContent] = useState(false);
   const [serverSearch, setServerSearch] = useState("");
+  const [bulkSelectedServerIds, setBulkSelectedServerIds] = useState<string[]>([]);
+  const [bulkActionInFlight, setBulkActionInFlight] = useState<BulkServerAction | null>(null);
+  const [performanceAdvisor, setPerformanceAdvisor] = useState<PerformanceAdvisorReport | null>(null);
+  const [trustReport, setTrustReport] = useState<TrustReport | null>(null);
 
   const api = useRef(new ApiClient(defaultApiBase, token));
+  const desktopBridge = useMemo(() => readDesktopBridge(), []);
   const logSocketRef = useRef<WebSocket | null>(null);
   const manuallyClosedSocketsRef = useRef(new WeakSet<WebSocket>());
   const logReconnectTimerRef = useRef<number | null>(null);
@@ -885,6 +1004,7 @@ export default function App() {
         setCrashReports([]);
         setQuickHostingStatus(null);
         setQuickHostingDiagnostics(null);
+        setPerformanceAdvisor(null);
         setEditorFiles([]);
         setFilePath("server.properties");
         setFileContent("");
@@ -926,13 +1046,14 @@ export default function App() {
 
   async function refreshServerOperations(serverId: string): Promise<void> {
     try {
-      const [backupsRes, policyRes, preflightRes, crashRes, quickHostRes, quickHostDiagnosticsRes] = await Promise.all([
+      const [backupsRes, policyRes, preflightRes, crashRes, quickHostRes, quickHostDiagnosticsRes, performanceRes] = await Promise.all([
         api.current.get<{ backups: BackupRecord[] }>(`/servers/${serverId}/backups`),
         api.current.get<{ policy: BackupPolicy }>(`/servers/${serverId}/backup-policy`),
         api.current.get<{ report: PreflightReport }>(`/servers/${serverId}/preflight`),
         api.current.get<{ reports: CrashReport[] }>(`/servers/${serverId}/crash-reports`),
         api.current.get<QuickHostingStatus>(`/servers/${serverId}/public-hosting/status`),
-        api.current.get<QuickHostingDiagnostics>(`/servers/${serverId}/public-hosting/diagnostics`)
+        api.current.get<QuickHostingDiagnostics>(`/servers/${serverId}/public-hosting/diagnostics`),
+        api.current.get<PerformanceAdvisorReport>(`/servers/${serverId}/performance/advisor?hours=24`)
       ]);
 
       setBackups(backupsRes.backups);
@@ -941,6 +1062,7 @@ export default function App() {
       setCrashReports(crashRes.reports);
       setQuickHostingStatus(quickHostRes);
       setQuickHostingDiagnostics(quickHostDiagnosticsRes);
+      setPerformanceAdvisor(performanceRes);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -948,17 +1070,19 @@ export default function App() {
 
   async function refreshAdminData(): Promise<void> {
     try {
-      const [usersRes, remoteRes, javaRes, funnelRes] = await Promise.all([
+      const [usersRes, remoteRes, javaRes, funnelRes, trustRes] = await Promise.all([
         api.current.get<{ users: UserRecord[] }>("/users"),
         api.current.get<{ remote: RemoteState }>("/remote/status"),
         api.current.get<{ channels: JavaChannel[] }>("/system/java/channels"),
-        api.current.get<TelemetryFunnel>("/telemetry/funnel?hours=168")
+        api.current.get<TelemetryFunnel>("/telemetry/funnel?hours=168"),
+        api.current.get<TrustReport>("/system/trust")
       ]);
 
       setUsers(usersRes.users);
       setRemoteState(remoteRes.remote);
       setJavaChannels(javaRes.channels);
       setFunnelMetrics(funnelRes);
+      setTrustReport(trustRes);
 
       setRotateTokenForm((previous) => ({
         ...previous,
@@ -973,6 +1097,22 @@ export default function App() {
     } catch {
       // non-owner users may not have access to these endpoints
       setFunnelMetrics(null);
+      try {
+        const trust = await api.current.get<TrustReport>("/system/trust");
+        setTrustReport(trust);
+      } catch {
+        setTrustReport(null);
+      }
+    }
+  }
+
+  async function refreshTrustReport(): Promise<void> {
+    try {
+      const trust = await api.current.get<TrustReport>("/system/trust");
+      setTrustReport(trust);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -1232,6 +1372,19 @@ export default function App() {
       );
     });
   }, [servers, serverSearch]);
+
+  useEffect(() => {
+    setBulkSelectedServerIds((previous) => previous.filter((id) => servers.some((server) => server.id === id)));
+  }, [servers]);
+
+  const bulkSelectedSet = useMemo(() => new Set(bulkSelectedServerIds), [bulkSelectedServerIds]);
+
+  const allFilteredServersSelected = useMemo(() => {
+    if (filteredServers.length === 0) {
+      return false;
+    }
+    return filteredServers.every((server) => bulkSelectedSet.has(server.id));
+  }, [filteredServers, bulkSelectedSet]);
 
   const serverSelectorOptions = useMemo(() => {
     if (!selectedServerId) {
@@ -1577,6 +1730,69 @@ export default function App() {
       await refreshAll();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function toggleBulkServerSelection(serverId: string): void {
+    setBulkSelectedServerIds((previous) => {
+      if (previous.includes(serverId)) {
+        return previous.filter((id) => id !== serverId);
+      }
+      return [...previous, serverId];
+    });
+  }
+
+  function toggleSelectAllFilteredServers(): void {
+    if (filteredServers.length === 0) {
+      return;
+    }
+    setBulkSelectedServerIds((previous) => {
+      const previousSet = new Set(previous);
+      if (filteredServers.every((server) => previousSet.has(server.id))) {
+        return previous.filter((id) => !filteredServers.some((server) => server.id === id));
+      }
+      const nextSet = new Set(previous);
+      for (const server of filteredServers) {
+        nextSet.add(server.id);
+      }
+      return [...nextSet];
+    });
+  }
+
+  async function runBulkServerAction(action: BulkServerAction): Promise<void> {
+    if (bulkSelectedServerIds.length === 0) {
+      setNotice("Select at least one server for bulk actions.");
+      return;
+    }
+
+    try {
+      setBulkActionInFlight(action);
+      const response = await api.current.post<BulkServerActionResponse>("/servers/bulk-action", {
+        action,
+        serverIds: bulkSelectedServerIds
+      });
+      await refreshAll();
+
+      const failedSummaries = response.results
+        .filter((entry) => !entry.ok)
+        .map((entry) => {
+          const serverName = servers.find((server) => server.id === entry.serverId)?.name ?? entry.serverId;
+          return `${serverName}: ${entry.message}`;
+        });
+      if (failedSummaries.length > 0) {
+        setNotice(
+          `Bulk ${action}: ${response.succeeded}/${response.total} succeeded. Issues: ${failedSummaries.slice(0, 3).join(" | ")}${
+            failedSummaries.length > 3 ? " ..." : ""
+          }`
+        );
+      } else {
+        setNotice(`Bulk ${action}: ${response.succeeded}/${response.total} succeeded.`);
+      }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkActionInFlight(null);
     }
   }
 
@@ -2290,6 +2506,9 @@ export default function App() {
           <button className={activeView === "content" ? "active" : ""} onClick={() => setActiveView("content")} type="button">
             Content
           </button>
+          <button className={activeView === "trust" ? "active" : ""} onClick={() => setActiveView("trust")} type="button">
+            Trust
+          </button>
           {isAdvancedExperience ? (
             <button className={activeView === "advanced" ? "active" : ""} onClick={() => setActiveView("advanced")} type="button">
               Advanced
@@ -2781,10 +3000,48 @@ export default function App() {
           ) : null}
 
           <section className="panel">
+            <h2>Bulk Operations</h2>
+            <p className="muted-note">
+              Select multiple servers and run one action across all of them.
+            </p>
+            <div className="inline-actions">
+              <span className="status-pill tone-neutral">{bulkSelectedServerIds.length} selected</span>
+              <button type="button" onClick={toggleSelectAllFilteredServers} disabled={filteredServers.length === 0}>
+                {allFilteredServersSelected ? "Clear Filtered Selection" : "Select Filtered"}
+              </button>
+              <button type="button" onClick={() => void runBulkServerAction("start")} disabled={bulkActionInFlight !== null}>
+                {bulkActionInFlight === "start" ? "Starting..." : "Start Selected"}
+              </button>
+              <button type="button" onClick={() => void runBulkServerAction("stop")} disabled={bulkActionInFlight !== null}>
+                {bulkActionInFlight === "stop" ? "Stopping..." : "Stop Selected"}
+              </button>
+              <button type="button" onClick={() => void runBulkServerAction("restart")} disabled={bulkActionInFlight !== null}>
+                {bulkActionInFlight === "restart" ? "Restarting..." : "Restart Selected"}
+              </button>
+              <button type="button" onClick={() => void runBulkServerAction("backup")} disabled={bulkActionInFlight !== null}>
+                {bulkActionInFlight === "backup" ? "Backing Up..." : "Backup Selected"}
+              </button>
+              <button type="button" onClick={() => void runBulkServerAction("goLive")} disabled={bulkActionInFlight !== null}>
+                {bulkActionInFlight === "goLive" ? "Publishing..." : "Go Live Selected"}
+              </button>
+            </div>
+          </section>
+
+          <section className="panel">
             <h2>Server Fleet</h2>
             <table>
               <thead>
                 <tr>
+                  <th>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={allFilteredServersSelected}
+                        onChange={toggleSelectAllFilteredServers}
+                        aria-label="Select filtered servers"
+                      />
+                    </label>
+                  </th>
                   <th>Name</th>
                   <th>Type</th>
                   <th>Version</th>
@@ -2796,6 +3053,16 @@ export default function App() {
               <tbody>
                 {filteredServers.map((server) => (
                   <tr key={server.id} className={server.id === selectedServerId ? "selected" : ""}>
+                    <td>
+                      <label className="toggle">
+                        <input
+                          type="checkbox"
+                          checked={bulkSelectedSet.has(server.id)}
+                          onChange={() => toggleBulkServerSelection(server.id)}
+                          aria-label={`Select ${server.name}`}
+                        />
+                      </label>
+                    </td>
                     <td>
                       <button className="link-btn" onClick={() => setSelectedServerId(server.id)} type="button">
                         {server.name}
@@ -2839,13 +3106,13 @@ export default function App() {
                 ))}
                 {servers.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <div className="empty-table-note">No servers yet. Open `Setup` and run Instant Launch to create your first server.</div>
                     </td>
                   </tr>
                 ) : filteredServers.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <div className="empty-table-note">No servers matched your search.</div>
                     </td>
                   </tr>
@@ -3258,6 +3525,75 @@ export default function App() {
             <ul className="tip-list">
               {troubleshootingTips.length > 0 ? troubleshootingTips.map((tip) => <li key={tip}>{tip}</li>) : <li>No active issues detected.</li>}
             </ul>
+          </section>
+
+          <section className="panel">
+            <h2>Performance Advisor</h2>
+            <p className="muted-note">Per-server trends for memory pressure, tick lag signals, and startup-time drift.</p>
+            {performanceAdvisor ? (
+              <>
+                <div className="stats-grid advisor-stats">
+                  <article>
+                    <h3>RAM</h3>
+                    <strong>{performanceAdvisor.advisor.metrics.memory.peakMb} MB</strong>
+                    <span>
+                      avg {performanceAdvisor.advisor.metrics.memory.avgMb} MB / max {performanceAdvisor.advisor.metrics.memory.configuredMaxMb} MB
+                    </span>
+                  </article>
+                  <article>
+                    <h3>CPU</h3>
+                    <strong>{performanceAdvisor.advisor.metrics.cpu.peakPercent}%</strong>
+                    <span>avg {performanceAdvisor.advisor.metrics.cpu.avgPercent}%</span>
+                  </article>
+                  <article>
+                    <h3>Tick Lag</h3>
+                    <strong>{performanceAdvisor.advisor.tickLag.eventsInWindow}</strong>
+                    <span>max {performanceAdvisor.advisor.tickLag.maxLagMs}ms in window</span>
+                  </article>
+                </div>
+                <ul className="list list-compact">
+                  <li>
+                    <div>
+                      <strong>Startup Trend</strong>
+                      <span>
+                        {performanceAdvisor.advisor.startup.latestDurationMs !== null
+                          ? `latest ${(performanceAdvisor.advisor.startup.latestDurationMs / 1000).toFixed(1)}s`
+                          : "no startup samples yet"}
+                      </span>
+                    </div>
+                    <span className={`status-pill ${performanceAdvisor.advisor.startup.trend === "regressing" ? "tone-warn" : "tone-ok"}`}>
+                      {performanceAdvisor.advisor.startup.trend}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Latest Sample</strong>
+                      <span>
+                        {performanceAdvisor.advisor.metrics.latest
+                          ? `${new Date(performanceAdvisor.advisor.metrics.latest.sampledAt).toLocaleTimeString()} · ${performanceAdvisor.advisor.metrics.latest.memoryMb} MB · ${performanceAdvisor.advisor.metrics.latest.cpuPercent}% CPU`
+                          : "No live metrics sample yet"}
+                      </span>
+                    </div>
+                  </li>
+                </ul>
+                <h3>Advisor Hints</h3>
+                <ul className="list">
+                  {performanceAdvisor.advisor.hints.map((hint) => (
+                    <li key={`${hint.title}-${hint.detail}`}>
+                      <div>
+                        <strong>{hint.title}</strong>
+                        <span>{hint.detail}</span>
+                      </div>
+                      <span className={`status-pill ${hint.level === "critical" ? "tone-error" : hint.level === "warning" ? "tone-warn" : "tone-ok"}`}>
+                        {hint.level}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="muted-note">No advisor data yet. Start this server and reopen Manage after a few minutes.</p>
+            )}
           </section>
 
           <section className="dual-grid">
@@ -3830,6 +4166,152 @@ export default function App() {
             </ul>
           </article>
         </section>
+      ) : null}
+
+      {activeView === "trust" ? (
+        <>
+          <section className="panel">
+            <h2>Security Transparency</h2>
+            <p className="muted-note">
+              Verify build trust signals, update provenance, and active security controls before exposing servers publicly.
+            </p>
+            <div className="inline-actions">
+              <button type="button" onClick={() => void refreshTrustReport()} disabled={!connected}>
+                Refresh Trust Report
+              </button>
+              {trustReport?.build.repository ? (
+                <a href={trustReport.build.repository} target="_blank" rel="noreferrer">
+                  Source Repository
+                </a>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="dual-grid">
+            <article className="panel">
+              <h2>Build Trust</h2>
+              {trustReport ? (
+                <ul className="list">
+                  <li>
+                    <div>
+                      <strong>App Version</strong>
+                      <span>{trustReport.build.appVersion}</span>
+                      <span>
+                        {trustReport.build.platform}/{trustReport.build.arch} · Node {trustReport.build.nodeVersion}
+                      </span>
+                    </div>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Signature Status</strong>
+                      <span>{desktopBridge?.signatureStatus ?? trustReport.build.signatureStatus}</span>
+                      <span>{trustReport.build.signatureProvider ?? "No signing provider metadata provided."}</span>
+                    </div>
+                    <span
+                      className={`status-pill ${
+                        (desktopBridge?.signatureStatus ?? trustReport.build.signatureStatus) === "signed" ? "tone-ok" : "tone-warn"
+                      }`}
+                    >
+                      {(desktopBridge?.signatureStatus ?? trustReport.build.signatureStatus) === "signed" ? "Verified" : "Review"}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Release Channel</strong>
+                      <span>{trustReport.build.releaseChannel}</span>
+                    </div>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Desktop Context</strong>
+                      <span>
+                        {desktopBridge
+                          ? `Desktop app ${desktopBridge.appVersion ?? "unknown"} on ${desktopBridge.platform ?? "unknown"}`
+                          : "Browser mode (no desktop bridge metadata)."}
+                      </span>
+                    </div>
+                  </li>
+                </ul>
+              ) : (
+                <p className="muted-note">Trust report unavailable. Connect to the API and refresh.</p>
+              )}
+            </article>
+
+            <article className="panel">
+              <h2>Security Controls</h2>
+              {trustReport ? (
+                <ul className="list">
+                  <li>
+                    <div>
+                      <strong>Access Model</strong>
+                      <span>{trustReport.security.authModel}</span>
+                      <span>{trustReport.security.localOnlyByDefault ? "Non-local access denied by default." : "Remote access is allowed by default."}</span>
+                    </div>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Remote Control</strong>
+                      <span>{trustReport.security.remoteControlEnabled ? "Enabled" : "Disabled"}</span>
+                      <span>Token required: {trustReport.security.remoteTokenRequired ? "yes" : "no"}</span>
+                    </div>
+                    <span className={`status-pill ${trustReport.security.remoteControlEnabled ? "tone-warn" : "tone-ok"}`}>
+                      {trustReport.security.remoteControlEnabled ? "Review" : "Safe Default"}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Configured Remote Token</strong>
+                      <span>{trustReport.security.configuredRemoteToken ? "Configured" : "Missing"}</span>
+                    </div>
+                    <span className={`status-pill ${trustReport.security.configuredRemoteToken ? "tone-ok" : "tone-warn"}`}>
+                      {trustReport.security.configuredRemoteToken ? "Ready" : "Action Needed"}
+                    </span>
+                  </li>
+                  <li>
+                    <div>
+                      <strong>Allowed Origins</strong>
+                      <span>{trustReport.security.allowedOrigins.length > 0 ? trustReport.security.allowedOrigins.join(", ") : "none configured"}</span>
+                    </div>
+                  </li>
+                </ul>
+              ) : (
+                <p className="muted-note">Security controls unavailable.</p>
+              )}
+            </article>
+          </section>
+
+          <section className="panel">
+            <h2>Verification Links</h2>
+            {trustReport ? (
+              <ul className="list">
+                <li>
+                  <div>
+                    <strong>Checksums</strong>
+                    <span>{trustReport.verification.checksumUrl ?? "No checksum URL published for this build."}</span>
+                  </div>
+                  {trustReport.verification.checksumUrl ? (
+                    <a href={trustReport.verification.checksumUrl} target="_blank" rel="noreferrer">
+                      Open Checksums
+                    </a>
+                  ) : null}
+                </li>
+                <li>
+                  <div>
+                    <strong>Attestation</strong>
+                    <span>{trustReport.verification.attestationUrl ?? "No attestation URL published for this build."}</span>
+                  </div>
+                  {trustReport.verification.attestationUrl ? (
+                    <a href={trustReport.verification.attestationUrl} target="_blank" rel="noreferrer">
+                      Open Attestation
+                    </a>
+                  ) : null}
+                </li>
+              </ul>
+            ) : (
+              <p className="muted-note">No verification metadata available.</p>
+            )}
+          </section>
+        </>
       ) : null}
 
       {activeView === "advanced" && isAdvancedExperience ? (

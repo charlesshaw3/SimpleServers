@@ -7,6 +7,9 @@ import type {
   BackupRecord,
   CrashReportRecord,
   EditorFileSnapshotRecord,
+  ServerPerformanceSampleRecord,
+  ServerStartupEventRecord,
+  ServerTickLagEventRecord,
   ServerPackageRecord,
   ServerRecord,
   TaskRecord,
@@ -86,6 +89,33 @@ type RawEditorFileSnapshot = {
   path: string;
   content: string;
   reason: string;
+  created_at: string;
+};
+
+type RawServerPerformanceSample = {
+  id: string;
+  server_id: string;
+  cpu_percent: number;
+  memory_mb: number;
+  sampled_at: string;
+};
+
+type RawServerStartupEvent = {
+  id: string;
+  server_id: string;
+  duration_ms: number;
+  success: number;
+  exit_code: number | null;
+  detail: string;
+  created_at: string;
+};
+
+type RawServerTickLagEvent = {
+  id: string;
+  server_id: string;
+  lag_ms: number;
+  ticks_behind: number;
+  line: string;
   created_at: string;
 };
 
@@ -170,6 +200,39 @@ function toEditorFileSnapshot(row: RawEditorFileSnapshot): EditorFileSnapshotRec
     path: row.path,
     content: row.content,
     reason: row.reason,
+    createdAt: row.created_at
+  };
+}
+
+function toServerPerformanceSample(row: RawServerPerformanceSample): ServerPerformanceSampleRecord {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    cpuPercent: row.cpu_percent,
+    memoryMb: row.memory_mb,
+    sampledAt: row.sampled_at
+  };
+}
+
+function toServerStartupEvent(row: RawServerStartupEvent): ServerStartupEventRecord {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    durationMs: row.duration_ms,
+    success: row.success,
+    exitCode: row.exit_code,
+    detail: row.detail,
+    createdAt: row.created_at
+  };
+}
+
+function toServerTickLagEvent(row: RawServerTickLagEvent): ServerTickLagEventRecord {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    lagMs: row.lag_ms,
+    ticksBehind: row.ticks_behind,
+    line: row.line,
     createdAt: row.created_at
   };
 }
@@ -802,6 +865,136 @@ export const store = {
          LIMIT -1 OFFSET ?
        )`
     ).run(input.serverId, input.path, keep);
+  },
+
+  createServerPerformanceSample(input: {
+    serverId: string;
+    cpuPercent: number;
+    memoryMb: number;
+    sampledAt?: string;
+  }): ServerPerformanceSampleRecord {
+    const record: ServerPerformanceSampleRecord = {
+      id: uid("perf"),
+      serverId: input.serverId,
+      cpuPercent: input.cpuPercent,
+      memoryMb: input.memoryMb,
+      sampledAt: input.sampledAt ?? nowIso()
+    };
+
+    db.prepare(
+      "INSERT INTO server_performance_samples (id, server_id, cpu_percent, memory_mb, sampled_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(record.id, record.serverId, record.cpuPercent, record.memoryMb, record.sampledAt);
+
+    return record;
+  },
+
+  listServerPerformanceSamples(input: {
+    serverId: string;
+    since?: string;
+    limit?: number;
+  }): ServerPerformanceSampleRecord[] {
+    const limit = Math.max(1, Math.min(input.limit ?? 200, 2000));
+    const rows = input.since
+      ? (db
+          .prepare(
+            "SELECT * FROM server_performance_samples WHERE server_id = ? AND sampled_at >= ? ORDER BY sampled_at DESC LIMIT ?"
+          )
+          .all(input.serverId, input.since, limit) as RawServerPerformanceSample[])
+      : (db
+          .prepare("SELECT * FROM server_performance_samples WHERE server_id = ? ORDER BY sampled_at DESC LIMIT ?")
+          .all(input.serverId, limit) as RawServerPerformanceSample[]);
+    return rows.map(toServerPerformanceSample);
+  },
+
+  pruneServerPerformanceSamples(input: {
+    olderThan: string;
+  }): number {
+    const result = db.prepare("DELETE FROM server_performance_samples WHERE sampled_at < ?").run(input.olderThan);
+    return result.changes;
+  },
+
+  createServerStartupEvent(input: {
+    serverId: string;
+    durationMs: number;
+    success: boolean;
+    exitCode: number | null;
+    detail: string;
+    createdAt?: string;
+  }): ServerStartupEventRecord {
+    const record: ServerStartupEventRecord = {
+      id: uid("boot"),
+      serverId: input.serverId,
+      durationMs: input.durationMs,
+      success: input.success ? 1 : 0,
+      exitCode: input.exitCode,
+      detail: input.detail,
+      createdAt: input.createdAt ?? nowIso()
+    };
+
+    db.prepare(
+      "INSERT INTO server_startup_events (id, server_id, duration_ms, success, exit_code, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(record.id, record.serverId, record.durationMs, record.success, record.exitCode, record.detail, record.createdAt);
+
+    return record;
+  },
+
+  listServerStartupEvents(input: {
+    serverId: string;
+    limit?: number;
+  }): ServerStartupEventRecord[] {
+    const limit = Math.max(1, Math.min(input.limit ?? 50, 500));
+    const rows = db
+      .prepare("SELECT * FROM server_startup_events WHERE server_id = ? ORDER BY created_at DESC LIMIT ?")
+      .all(input.serverId, limit) as RawServerStartupEvent[];
+    return rows.map(toServerStartupEvent);
+  },
+
+  createServerTickLagEvent(input: {
+    serverId: string;
+    lagMs: number;
+    ticksBehind: number;
+    line: string;
+    createdAt?: string;
+  }): ServerTickLagEventRecord {
+    const record: ServerTickLagEventRecord = {
+      id: uid("tick"),
+      serverId: input.serverId,
+      lagMs: input.lagMs,
+      ticksBehind: input.ticksBehind,
+      line: input.line.slice(0, 600),
+      createdAt: input.createdAt ?? nowIso()
+    };
+
+    db.prepare(
+      "INSERT INTO server_tick_lag_events (id, server_id, lag_ms, ticks_behind, line, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(record.id, record.serverId, record.lagMs, record.ticksBehind, record.line, record.createdAt);
+
+    return record;
+  },
+
+  listServerTickLagEvents(input: {
+    serverId: string;
+    since?: string;
+    limit?: number;
+  }): ServerTickLagEventRecord[] {
+    const limit = Math.max(1, Math.min(input.limit ?? 100, 1000));
+    const rows = input.since
+      ? (db
+          .prepare(
+            "SELECT * FROM server_tick_lag_events WHERE server_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT ?"
+          )
+          .all(input.serverId, input.since, limit) as RawServerTickLagEvent[])
+      : (db
+          .prepare("SELECT * FROM server_tick_lag_events WHERE server_id = ? ORDER BY created_at DESC LIMIT ?")
+          .all(input.serverId, limit) as RawServerTickLagEvent[]);
+    return rows.map(toServerTickLagEvent);
+  },
+
+  pruneServerTickLagEvents(input: {
+    olderThan: string;
+  }): number {
+    const result = db.prepare("DELETE FROM server_tick_lag_events WHERE created_at < ?").run(input.olderThan);
+    return result.changes;
   },
 
   createUxTelemetryEvent(input: {

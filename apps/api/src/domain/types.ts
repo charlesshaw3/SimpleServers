@@ -151,3 +151,30 @@ export type EditorFileSnapshotRecord = {
   reason: string;
   createdAt: string;
 };
+
+export type ServerPerformanceSampleRecord = {
+  id: string;
+  serverId: string;
+  cpuPercent: number;
+  memoryMb: number;
+  sampledAt: string;
+};
+
+export type ServerStartupEventRecord = {
+  id: string;
+  serverId: string;
+  durationMs: number;
+  success: number;
+  exitCode: number | null;
+  detail: string;
+  createdAt: string;
+};
+
+export type ServerTickLagEventRecord = {
+  id: string;
+  serverId: string;
+  lagMs: number;
+  ticksBehind: number;
+  line: string;
+  createdAt: string;
+};

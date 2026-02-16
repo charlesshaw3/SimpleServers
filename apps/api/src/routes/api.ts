@@ -44,6 +44,8 @@ const ignoredDirectoryNames = new Set(["node_modules", "libraries", ".git", "cac
 const maxEditableFileBytes = 1024 * 1024; // 1 MB safety guard for in-app editing.
 const maxEditorFiles = 350;
 const maxEditorDepth = 5;
+const APP_VERSION = "0.3.1";
+const REPOSITORY_URL = "https://github.com/charlesshaw3/SimpleServers";
 
 const userCreateSchema = z.object({
   username: z.string().min(2).max(24),
@@ -180,6 +182,15 @@ const telemetryEventSchema = z.object({
 
 const telemetryFunnelQuerySchema = z.object({
   hours: z.coerce.number().int().min(1).max(24 * 30).default(24)
+});
+
+const bulkServerActionSchema = z.object({
+  serverIds: z.array(z.string().min(4)).min(1).max(100),
+  action: z.enum(["start", "stop", "restart", "backup", "goLive"])
+});
+
+const performanceAdvisorQuerySchema = z.object({
+  hours: z.coerce.number().int().min(1).max(24 * 14).default(24)
 });
 
 function applyPreset(payload: z.infer<typeof createServerSchema>): z.infer<typeof createServerSchema> {
@@ -567,6 +578,41 @@ export async function registerApiRoutes(
     };
   });
 
+  app.get("/system/trust", { preHandler: [authenticate] }, async () => {
+    const remote = deps.remoteControl.getStatus();
+    const signatureStatus =
+      process.env.SIMPLESERVERS_BUILD_SIGNATURE_STATUS ??
+      (process.env.SIMPLESERVERS_DESKTOP_DEV === "1" ? "development" : "unknown");
+
+    return {
+      generatedAt: new Date().toISOString(),
+      build: {
+        appVersion: APP_VERSION,
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.version,
+        mode: process.env.NODE_ENV ?? "development",
+        signatureStatus,
+        signatureProvider: process.env.SIMPLESERVERS_BUILD_SIGNATURE_PROVIDER ?? null,
+        releaseChannel: process.env.SIMPLESERVERS_UPDATE_CHANNEL ?? "stable",
+        repository: REPOSITORY_URL
+      },
+      verification: {
+        checksumUrl: process.env.SIMPLESERVERS_RELEASE_CHECKSUM_URL ?? null,
+        attestationUrl: process.env.SIMPLESERVERS_RELEASE_ATTESTATION_URL ?? null
+      },
+      security: {
+        localOnlyByDefault: true,
+        authModel: "token-rbac",
+        auditTrailEnabled: true,
+        remoteControlEnabled: remote.enabled,
+        remoteTokenRequired: remote.requireToken,
+        configuredRemoteToken: remote.configuredToken,
+        allowedOrigins: remote.allowedOrigins
+      }
+    };
+  });
+
   const createAndProvisionServer = async (payload: z.infer<typeof createServerSchema>) => {
     if (payload.maxMemoryMb < payload.minMemoryMb) {
       throw app.httpErrors.badRequest("maxMemoryMb must be >= minMemoryMb");
@@ -636,6 +682,314 @@ export async function registerApiRoutes(
     }
 
     return { server, policyFindings };
+  };
+
+  const goLiveForServer = async (
+    server: NonNullable<ReturnType<typeof store.getServerById>>
+  ): Promise<{
+    ok: boolean;
+    blocked: boolean;
+    preflight: ReturnType<PreflightService["run"]>;
+    warning: string | null;
+    publicHosting: {
+      quickHostReady: boolean;
+      publicAddress: string | null;
+      tunnel: ReturnType<TunnelService["listTunnels"]>[number] | null;
+      steps: string[];
+    };
+  }> => {
+    const preflight = deps.preflight.run(server);
+    const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
+    if (criticalIssue) {
+      deps.alerts.createAlert(server.id, "critical", "preflight_block", criticalIssue.message);
+      return {
+        ok: false,
+        blocked: true,
+        preflight,
+        warning: "Go Live blocked by critical preflight issue.",
+        publicHosting: {
+          quickHostReady: false,
+          publicAddress: null,
+          tunnel: null,
+          steps: [criticalIssue.message]
+        }
+      };
+    }
+
+    for (const issue of preflight.issues.filter((issue) => issue.severity === "warning")) {
+      deps.alerts.createAlert(server.id, "warning", "preflight_warning", issue.message);
+    }
+
+    let warning: string | null = null;
+    const running = deps.runtime.isRunning(server.id) || server.status === "running" || server.status === "starting";
+    if (!running) {
+      try {
+        await deps.runtime.start(server);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.alerts.createAlert(server.id, "critical", "go_live_start_failed", message);
+        return {
+          ok: false,
+          blocked: false,
+          preflight,
+          warning: `Failed to start server: ${message}`,
+          publicHosting: {
+            quickHostReady: false,
+            publicAddress: null,
+            tunnel: null,
+            steps: ["Fix startup errors before enabling public hosting."]
+          }
+        };
+      }
+    }
+
+    const tunnel = deps.tunnels.ensureQuickTunnel(server.id);
+    try {
+      await deps.tunnels.startTunnel(tunnel.id);
+      const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+      if (syncResult.pendingReason) {
+        warning = syncResult.pendingReason;
+      }
+    } catch (error) {
+      warning = error instanceof Error ? error.message : String(error);
+    }
+
+    const tunnels = deps.tunnels.listTunnels(server.id);
+    const activeTunnel = tunnels.find((entry) => entry.provider === "playit") ?? tunnels[0] ?? null;
+    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
+    const quickHostReady = Boolean(activeTunnel && hasResolvedPublicAddress);
+    const publicAddress = hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null;
+    if (!publicAddress && !warning) {
+      warning = "Playit is still assigning a public endpoint.";
+    }
+
+    return {
+      ok: true,
+      blocked: false,
+      preflight,
+      warning,
+      publicHosting: {
+        quickHostReady,
+        publicAddress,
+        tunnel: activeTunnel,
+        steps: quickHostReady
+          ? ["Share the public address with players.", "Keep this app running while hosting."]
+          : [
+              "Playit is still assigning a public endpoint.",
+              "Keep this machine online until the endpoint resolves."
+            ]
+      }
+    };
+  };
+
+  const toFixedNumber = (value: number, digits = 1): number => Number(value.toFixed(digits));
+
+  const buildPerformanceAdvisor = (
+    server: NonNullable<ReturnType<typeof store.getServerById>>,
+    hours: number
+  ): {
+    windowHours: number;
+    sampleCount: number;
+    metrics: {
+      latest: { sampledAt: string; cpuPercent: number; memoryMb: number } | null;
+      cpu: { avgPercent: number; peakPercent: number };
+      memory: { avgMb: number; peakMb: number; configuredMaxMb: number };
+    };
+    startup: {
+      trend: "improving" | "stable" | "regressing" | "insufficient_data";
+      recent: Array<{
+        createdAt: string;
+        durationMs: number;
+        success: boolean;
+        exitCode: number | null;
+      }>;
+      averageDurationMs: number | null;
+      latestDurationMs: number | null;
+    };
+    tickLag: {
+      eventsInWindow: number;
+      lastEventAt: string | null;
+      maxLagMs: number;
+      recent: Array<{ createdAt: string; lagMs: number; ticksBehind: number; line: string }>;
+    };
+    hints: Array<{
+      level: "ok" | "warning" | "critical";
+      title: string;
+      detail: string;
+    }>;
+  } => {
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    const samples = store.listServerPerformanceSamples({
+      serverId: server.id,
+      since,
+      limit: 400
+    });
+    const startupEvents = store.listServerStartupEvents({
+      serverId: server.id,
+      limit: 30
+    });
+    const tickLagEvents = store.listServerTickLagEvents({
+      serverId: server.id,
+      since,
+      limit: 120
+    });
+
+    const sampleCount = samples.length;
+    const cpuValues = samples.map((entry) => entry.cpuPercent);
+    const memoryValues = samples.map((entry) => entry.memoryMb);
+    const latest = samples[0]
+      ? {
+          sampledAt: samples[0].sampledAt,
+          cpuPercent: toFixedNumber(samples[0].cpuPercent, 1),
+          memoryMb: toFixedNumber(samples[0].memoryMb, 0)
+        }
+      : null;
+    const avgCpu = cpuValues.length > 0 ? cpuValues.reduce((sum, value) => sum + value, 0) / cpuValues.length : 0;
+    const peakCpu = cpuValues.length > 0 ? Math.max(...cpuValues) : 0;
+    const avgMemory = memoryValues.length > 0 ? memoryValues.reduce((sum, value) => sum + value, 0) / memoryValues.length : 0;
+    const peakMemory = memoryValues.length > 0 ? Math.max(...memoryValues) : 0;
+
+    const startupSuccessful = startupEvents.filter((entry) => entry.success === 1);
+    const latestStartup = startupSuccessful[0] ?? null;
+    const averageStartupMs =
+      startupSuccessful.length > 0
+        ? Math.round(startupSuccessful.reduce((sum, entry) => sum + entry.durationMs, 0) / startupSuccessful.length)
+        : null;
+    const recentStartupSlice = startupSuccessful.slice(0, 5);
+    const olderStartupSlice = startupSuccessful.slice(5, 10);
+    let startupTrend: "improving" | "stable" | "regressing" | "insufficient_data" = "insufficient_data";
+    if (recentStartupSlice.length >= 2 && olderStartupSlice.length >= 2) {
+      const recentAvg = recentStartupSlice.reduce((sum, entry) => sum + entry.durationMs, 0) / recentStartupSlice.length;
+      const olderAvg = olderStartupSlice.reduce((sum, entry) => sum + entry.durationMs, 0) / olderStartupSlice.length;
+      const deltaRatio = olderAvg > 0 ? (recentAvg - olderAvg) / olderAvg : 0;
+      if (deltaRatio > 0.12) {
+        startupTrend = "regressing";
+      } else if (deltaRatio < -0.12) {
+        startupTrend = "improving";
+      } else {
+        startupTrend = "stable";
+      }
+    } else if (startupSuccessful.length >= 2) {
+      startupTrend = "stable";
+    }
+
+    const lagMaxMs = tickLagEvents.length > 0 ? Math.max(...tickLagEvents.map((entry) => entry.lagMs)) : 0;
+    const hints: Array<{ level: "ok" | "warning" | "critical"; title: string; detail: string }> = [];
+    if (sampleCount === 0) {
+      hints.push({
+        level: "ok",
+        title: "No performance samples yet",
+        detail: "Start the server and keep it running for a few minutes to build advisor trends."
+      });
+    } else {
+      if (peakMemory > server.maxMemoryMb * 1.05) {
+        hints.push({
+          level: "critical",
+          title: "Memory usage exceeded configured max",
+          detail: `Peak memory reached ${toFixedNumber(peakMemory, 0)} MB while max allocation is ${server.maxMemoryMb} MB. Increase max memory or remove heavy mods/plugins.`
+        });
+      } else if (peakMemory > server.maxMemoryMb * 0.92) {
+        hints.push({
+          level: "warning",
+          title: "Memory close to limit",
+          detail: `Peak memory is ${toFixedNumber((peakMemory / server.maxMemoryMb) * 100, 0)}% of configured max. Consider +1-2 GB headroom for stability.`
+        });
+      } else if (avgMemory < server.maxMemoryMb * 0.45) {
+        hints.push({
+          level: "ok",
+          title: "Memory headroom is healthy",
+          detail: `Average memory usage is ${toFixedNumber(avgMemory, 0)} MB. You may be able to lower max memory to reduce host pressure.`
+        });
+      }
+
+      if (peakCpu > 95) {
+        hints.push({
+          level: "critical",
+          title: "CPU saturation detected",
+          detail: `CPU peaked at ${toFixedNumber(peakCpu, 1)}%. Reduce simulation load (view/simulation distance) or use a higher-performance preset.`
+        });
+      } else if (avgCpu > 75) {
+        hints.push({
+          level: "warning",
+          title: "Sustained high CPU load",
+          detail: `Average CPU usage is ${toFixedNumber(avgCpu, 1)}%. Watch for TPS drops during player spikes.`
+        });
+      }
+    }
+
+    if (tickLagEvents.length >= 8 || lagMaxMs >= 2000) {
+      hints.push({
+        level: "warning",
+        title: "Tick lag spikes detected",
+        detail: `${tickLagEvents.length} lag events observed in the last ${hours}h (max ${lagMaxMs}ms). Reduce heavy mods/plugins or lower view distance.`
+      });
+    } else if (tickLagEvents.length > 0) {
+      hints.push({
+        level: "ok",
+        title: "Minor tick lag events",
+        detail: `${tickLagEvents.length} lag events detected, max ${lagMaxMs}ms. Continue monitoring under higher load.`
+      });
+    }
+
+    if (startupTrend === "regressing") {
+      hints.push({
+        level: "warning",
+        title: "Startup time trend is regressing",
+        detail: "Recent starts are materially slower than earlier starts. Review newly added mods/plugins and startup scripts."
+      });
+    } else if (startupTrend === "improving") {
+      hints.push({
+        level: "ok",
+        title: "Startup trend is improving",
+        detail: "Recent startup times are lower than earlier runs."
+      });
+    } else if (averageStartupMs !== null && averageStartupMs > 45000) {
+      hints.push({
+        level: "warning",
+        title: "Slow startup baseline",
+        detail: `Average startup time is ${(averageStartupMs / 1000).toFixed(1)}s. Consider trimming mod/plugin load or increasing storage throughput.`
+      });
+    }
+
+    return {
+      windowHours: hours,
+      sampleCount,
+      metrics: {
+        latest,
+        cpu: {
+          avgPercent: toFixedNumber(avgCpu, 1),
+          peakPercent: toFixedNumber(peakCpu, 1)
+        },
+        memory: {
+          avgMb: toFixedNumber(avgMemory, 0),
+          peakMb: toFixedNumber(peakMemory, 0),
+          configuredMaxMb: server.maxMemoryMb
+        }
+      },
+      startup: {
+        trend: startupTrend,
+        recent: startupEvents.slice(0, 10).map((entry) => ({
+          createdAt: entry.createdAt,
+          durationMs: entry.durationMs,
+          success: entry.success === 1,
+          exitCode: entry.exitCode
+        })),
+        averageDurationMs: averageStartupMs,
+        latestDurationMs: latestStartup?.durationMs ?? null
+      },
+      tickLag: {
+        eventsInWindow: tickLagEvents.length,
+        lastEventAt: tickLagEvents[0]?.createdAt ?? null,
+        maxLagMs: lagMaxMs,
+        recent: tickLagEvents.slice(0, 20).map((entry) => ({
+          createdAt: entry.createdAt,
+          lagMs: entry.lagMs,
+          ticksBehind: entry.ticksBehind,
+          line: entry.line
+        }))
+      },
+      hints
+    };
   };
 
   app.get("/servers", { preHandler: [authenticate] }, async () => ({ servers: store.listServers() }));
@@ -769,6 +1123,156 @@ export async function registerApiRoutes(
         publicAddress: quickHostAddress,
         warning: quickHostingWarning
       }
+    };
+  });
+
+  app.post("/servers/bulk-action", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const payload = bulkServerActionSchema.parse(request.body);
+    const uniqueServerIds = [...new Set(payload.serverIds)];
+    const results: Array<{
+      serverId: string;
+      ok: boolean;
+      blocked?: boolean;
+      warning?: string | null;
+      message: string;
+      publicAddress?: string | null;
+    }> = [];
+
+    for (const serverId of uniqueServerIds) {
+      const server = store.getServerById(serverId);
+      if (!server) {
+        results.push({
+          serverId,
+          ok: false,
+          message: "Server not found"
+        });
+        continue;
+      }
+
+      if (payload.action === "start") {
+        const preflight = deps.preflight.run(server);
+        const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
+        if (criticalIssue) {
+          deps.alerts.createAlert(server.id, "critical", "preflight_block", criticalIssue.message);
+          results.push({
+            serverId: server.id,
+            ok: false,
+            blocked: true,
+            message: `Blocked by preflight: ${criticalIssue.message}`
+          });
+          continue;
+        }
+
+        try {
+          await deps.runtime.start(server);
+          await deps.tunnels.startTunnelsForServer(server.id);
+          results.push({
+            serverId: server.id,
+            ok: true,
+            message: "Started"
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          deps.alerts.createAlert(server.id, "critical", "start_failed", message);
+          results.push({
+            serverId: server.id,
+            ok: false,
+            message: `Start failed: ${message}`
+          });
+        }
+        continue;
+      }
+
+      if (payload.action === "stop") {
+        try {
+          await deps.tunnels.stopTunnelsForServer(server.id);
+          await deps.runtime.stop(server.id);
+          results.push({
+            serverId: server.id,
+            ok: true,
+            message: "Stopped"
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({
+            serverId: server.id,
+            ok: false,
+            message: `Stop failed: ${message}`
+          });
+        }
+        continue;
+      }
+
+      if (payload.action === "restart") {
+        try {
+          await deps.tunnels.stopTunnelsForServer(server.id);
+          await deps.runtime.restart(server);
+          await deps.tunnels.startTunnelsForServer(server.id);
+          results.push({
+            serverId: server.id,
+            ok: true,
+            message: "Restarted"
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({
+            serverId: server.id,
+            ok: false,
+            message: `Restart failed: ${message}`
+          });
+        }
+        continue;
+      }
+
+      if (payload.action === "backup") {
+        try {
+          await deps.backup.createBackup(server.id);
+          results.push({
+            serverId: server.id,
+            ok: true,
+            message: "Backup created"
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({
+            serverId: server.id,
+            ok: false,
+            message: `Backup failed: ${message}`
+          });
+        }
+        continue;
+      }
+
+      if (payload.action === "goLive") {
+        const outcome = await goLiveForServer(server);
+        results.push({
+          serverId: server.id,
+          ok: outcome.ok,
+          blocked: outcome.blocked,
+          warning: outcome.warning,
+          message: outcome.ok
+            ? outcome.publicHosting.publicAddress
+              ? "Public address ready"
+              : "Go Live started; endpoint is still resolving"
+            : outcome.warning ?? "Go Live failed",
+          publicAddress: outcome.publicHosting.publicAddress
+        });
+      }
+    }
+
+    writeAudit(request.user!.username, "server.bulk_action", "server", payload.action, {
+      action: payload.action,
+      serverIds: uniqueServerIds,
+      results
+    });
+
+    return {
+      ok: results.every((entry) => entry.ok),
+      action: payload.action,
+      total: uniqueServerIds.length,
+      succeeded: results.filter((entry) => entry.ok).length,
+      failed: results.filter((entry) => !entry.ok).length,
+      results
     };
   });
 
@@ -969,78 +1473,24 @@ export async function registerApiRoutes(
       throw app.httpErrors.notFound("Server not found");
     }
 
-    const preflight = deps.preflight.run(server);
-    const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
-    if (criticalIssue) {
-      deps.alerts.createAlert(server.id, "critical", "preflight_block", criticalIssue.message);
-      return {
+    const outcome = await goLiveForServer(server);
+    if (!outcome.ok && !outcome.blocked && outcome.warning?.startsWith("Failed to start server:")) {
+      return reply.code(500).send({
         ok: false,
-        blocked: true,
-        preflight,
-        warning: "Go Live blocked by critical preflight issue."
-      };
-    }
-
-    for (const issue of preflight.issues.filter((issue) => issue.severity === "warning")) {
-      deps.alerts.createAlert(server.id, "warning", "preflight_warning", issue.message);
-    }
-
-    const running = deps.runtime.isRunning(id) || server.status === "running" || server.status === "starting";
-    let warning: string | null = null;
-    if (!running) {
-      try {
-        await deps.runtime.start(server);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        deps.alerts.createAlert(server.id, "critical", "go_live_start_failed", message);
-        return reply.code(500).send({ ok: false, blocked: false, preflight, error: `Failed to start server: ${message}` });
-      }
-    }
-
-    const tunnel = deps.tunnels.ensureQuickTunnel(server.id);
-    try {
-      await deps.tunnels.startTunnel(tunnel.id);
-      const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
-      if (syncResult.pendingReason) {
-        warning = syncResult.pendingReason;
-      }
-    } catch (error) {
-      warning = error instanceof Error ? error.message : String(error);
-    }
-
-    const tunnels = deps.tunnels.listTunnels(server.id);
-    const activeTunnel = tunnels.find((entry) => entry.provider === "playit") ?? tunnels[0] ?? null;
-    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
-    const quickHostReady = Boolean(activeTunnel && hasResolvedPublicAddress);
-    const publicAddress = hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null;
-    if (!publicAddress && !warning) {
-      warning = "Playit is still assigning a public endpoint.";
+        blocked: false,
+        preflight: outcome.preflight,
+        error: outcome.warning
+      });
     }
 
     writeAudit(request.user!.username, "server.go_live", "server", id, {
-      tunnelId: activeTunnel?.id ?? null,
-      quickHostReady,
-      publicAddress,
-      warning
+      tunnelId: outcome.publicHosting.tunnel?.id ?? null,
+      quickHostReady: outcome.publicHosting.quickHostReady,
+      publicAddress: outcome.publicHosting.publicAddress,
+      warning: outcome.warning
     });
 
-    return {
-      ok: true,
-      blocked: false,
-      preflight,
-      warning,
-      publicHosting: {
-        quickHostReady,
-        publicAddress,
-        tunnel: activeTunnel,
-        steps: quickHostReady
-          ? ["Share the public address with players.", "Keep this app running while hosting."]
-          : [
-              "Playit is still assigning a public endpoint.",
-              "Keep this machine online until the endpoint resolves."
-            ]
-      }
-    };
+    return outcome;
   });
 
   app.post("/servers/:id/command", { preHandler: [authenticate, requireRole("moderator")] }, async (request) => {
@@ -1068,6 +1518,25 @@ export async function registerApiRoutes(
 
     return {
       report: deps.preflight.run(server)
+    };
+  });
+
+  app.get("/servers/:id/performance/advisor", { preHandler: [authenticate] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const query = performanceAdvisorQuerySchema.parse(request.query);
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    return {
+      server: {
+        id: server.id,
+        name: server.name,
+        status: server.status,
+        maxMemoryMb: server.maxMemoryMb
+      },
+      advisor: buildPerformanceAdvisor(server, query.hours)
     };
   });
 
@@ -1889,7 +2358,7 @@ export async function registerApiRoutes(
 
   app.get("/meta", async () => ({
     name: "SimpleServers",
-    version: "0.2.2",
+    version: APP_VERSION,
     dataDir: config.dataDir
   }));
 

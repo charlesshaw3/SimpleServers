@@ -5,6 +5,8 @@ import { store } from "../repositories/store.js";
 const MB = 1024 * 1024;
 const DEDUPE_WINDOW_MS = 60_000;
 const DEDUPE_TTL_MS = 10 * 60_000;
+const PERFORMANCE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const LAG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 export class AlertMonitorService {
   private timer: NodeJS.Timeout | null = null;
@@ -47,6 +49,11 @@ export class AlertMonitorService {
         const stats = await pidusage(server.pid);
         const memoryMb = stats.memory / MB;
         const cpuPercent = stats.cpu;
+        store.createServerPerformanceSample({
+          serverId: server.id,
+          cpuPercent,
+          memoryMb
+        });
 
         if (memoryMb > server.maxMemoryMb * 1.2) {
           this.createAlert(
@@ -93,6 +100,10 @@ export class AlertMonitorService {
     }
 
     this.pruneDedupe();
+    const cutoffIso = new Date(Date.now() - PERFORMANCE_RETENTION_MS).toISOString();
+    store.pruneServerPerformanceSamples({ olderThan: cutoffIso });
+    const lagCutoffIso = new Date(Date.now() - LAG_RETENTION_MS).toISOString();
+    store.pruneServerTickLagEvents({ olderThan: lagCutoffIso });
   }
 
   createAlert(serverId: string, severity: "info" | "warning" | "critical", kind: string, message: string): void {

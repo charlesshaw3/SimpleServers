@@ -5,6 +5,7 @@ import { ConsoleHub } from "./console-hub.js";
 import { ServerSetupService } from "./server-setup.js";
 
 const STARTUP_GRACE_MS = 2000;
+const TICK_LAG_REGEX = /Can't keep up!.*?Running\s+([0-9]+(?:\.[0-9]+)?)ms.*?([0-9]+(?:\.[0-9]+)?)\s+ticks?\s+behind/i;
 
 type RuntimeEntry = {
   serverId: string;
@@ -29,6 +30,7 @@ export class ServerRuntimeService {
       return;
     }
 
+    const startupStartedAtMs = Date.now();
     const command = this.setupService.buildLaunchCommand(server);
     store.updateServerState(server.id, "starting", null);
 
@@ -44,6 +46,7 @@ export class ServerRuntimeService {
       const lines = chunk.toString().split(/\r?\n/).filter(Boolean);
       for (const line of lines) {
         this.consoleHub.publish(server.id, line);
+        this.recordTickLagEvent(server.id, line);
       }
     });
 
@@ -100,8 +103,23 @@ export class ServerRuntimeService {
       if (current?.status === "starting") {
         store.updateServerState(server.id, "stopped", null);
       }
+      store.createServerStartupEvent({
+        serverId: server.id,
+        durationMs: Date.now() - startupStartedAtMs,
+        success: false,
+        exitCode: null,
+        detail: startupFailure.message
+      });
       throw startupFailure;
     }
+
+    store.createServerStartupEvent({
+      serverId: server.id,
+      durationMs: Date.now() - startupStartedAtMs,
+      success: true,
+      exitCode: null,
+      detail: "startup_grace_passed"
+    });
   }
 
   async stop(serverId: string): Promise<void> {
@@ -144,5 +162,25 @@ export class ServerRuntimeService {
 
   getPid(serverId: string): number | null {
     return this.runtimes.get(serverId)?.child.pid ?? null;
+  }
+
+  private recordTickLagEvent(serverId: string, line: string): void {
+    const match = line.match(TICK_LAG_REGEX);
+    if (!match) {
+      return;
+    }
+
+    const lagMs = Number.parseFloat(match[1]);
+    const ticksBehind = Number.parseFloat(match[2]);
+    if (!Number.isFinite(lagMs) || !Number.isFinite(ticksBehind)) {
+      return;
+    }
+
+    store.createServerTickLagEvent({
+      serverId,
+      lagMs: Math.round(lagMs),
+      ticksBehind: Math.round(ticksBehind),
+      line
+    });
   }
 }

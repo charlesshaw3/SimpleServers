@@ -231,6 +231,10 @@ a {
   gap: 10px;
 }
 
+.advisor-stats {
+  margin-bottom: 10px;
+}
+
 .network-health .list li {
   align-items: center;
 }

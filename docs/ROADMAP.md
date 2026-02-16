@@ -2,7 +2,14 @@
 
 ## Status
 
-Current stable milestone: `v0.2.2` (validated by local typecheck/tests/build).
+Current stable milestone: `v0.3.1` (validated by local typecheck/tests/build).
+
+## Implemented in v0.3.1
+
+- Added multi-server bulk actions (`start`, `stop`, `restart`, `backup`, `go-live`) with per-server result reporting.
+- Added per-server Performance Advisor with RAM/CPU trends, startup trend analysis, tick-lag parsing, and actionable hints.
+- Added in-app Trust workspace and `/system/trust` API for signing/provenance visibility and security transparency controls.
+- Added runtime persistence for advisor data (`server_performance_samples`, `server_startup_events`, `server_tick_lag_events`) with retention pruning.
 
 ## Implemented in v0.2.2
 

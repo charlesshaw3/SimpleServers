@@ -78,6 +78,21 @@ describe("api integration", () => {
     });
   });
 
+  it("returns build trust and security transparency report", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/system/trust",
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().build.appVersion).toBe("0.3.1");
+    expect(response.json().security.localOnlyByDefault).toBe(true);
+    expect(response.json().security.authModel).toBe("token-rbac");
+  });
+
   it("returns guided setup presets", async () => {
     const response = await app.inject({
       method: "GET",
@@ -641,6 +656,123 @@ describe("api integration", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().blocked).toBe(true);
     expect(response.json().warning).toContain("blocked");
+  });
+
+  it("supports multi-server bulk actions", async () => {
+    const rootA = path.join(testDataDir, "servers", "bulk-a");
+    const rootB = path.join(testDataDir, "servers", "bulk-b");
+    fs.mkdirSync(rootA, { recursive: true });
+    fs.mkdirSync(rootB, { recursive: true });
+    fs.writeFileSync(path.join(rootA, "server.jar"), "placeholder", "utf8");
+    fs.writeFileSync(path.join(rootA, "eula.txt"), "eula=true\n", "utf8");
+    fs.writeFileSync(path.join(rootA, "server.properties"), "motd=bulk-a\n", "utf8");
+    fs.writeFileSync(path.join(rootB, "server.jar"), "placeholder", "utf8");
+    fs.writeFileSync(path.join(rootB, "eula.txt"), "eula=true\n", "utf8");
+    fs.writeFileSync(path.join(rootB, "server.properties"), "motd=bulk-b\n", "utf8");
+
+    const serverA = store.createServer({
+      name: "bulk-a",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(rootA, "server.jar"),
+      rootPath: rootA,
+      javaPath: "java",
+      port: 25610,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+    const serverB = store.createServer({
+      name: "bulk-b",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(rootB, "server.jar"),
+      rootPath: rootB,
+      javaPath: "java",
+      port: 25611,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/servers/bulk-action",
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        action: "backup",
+        serverIds: [serverA.id, serverB.id]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().action).toBe("backup");
+    expect(response.json().succeeded).toBe(2);
+    expect(response.json().failed).toBe(0);
+  });
+
+  it("returns a per-server performance advisor summary", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "advisor-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    const advisorServer = store.createServer({
+      name: "advisor-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25612,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const now = Date.now();
+    for (let idx = 0; idx < 6; idx += 1) {
+      store.createServerPerformanceSample({
+        serverId: advisorServer.id,
+        cpuPercent: 40 + idx * 7,
+        memoryMb: 1100 + idx * 120,
+        sampledAt: new Date(now - idx * 5 * 60 * 1000).toISOString()
+      });
+    }
+    store.createServerStartupEvent({
+      serverId: advisorServer.id,
+      durationMs: 32000,
+      success: true,
+      exitCode: null,
+      detail: "ok"
+    });
+    store.createServerStartupEvent({
+      serverId: advisorServer.id,
+      durationMs: 42000,
+      success: true,
+      exitCode: null,
+      detail: "ok"
+    });
+    store.createServerTickLagEvent({
+      serverId: advisorServer.id,
+      lagMs: 1800,
+      ticksBehind: 35,
+      line: "Can't keep up! Is the server overloaded? Running 1800ms or 35 ticks behind"
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/servers/${advisorServer.id}/performance/advisor?hours=24`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().server.id).toBe(advisorServer.id);
+    expect(response.json().advisor.sampleCount).toBeGreaterThan(0);
+    expect(response.json().advisor.metrics.memory.peakMb).toBeGreaterThan(1100);
+    expect(response.json().advisor.tickLag.eventsInWindow).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(response.json().advisor.hints)).toBe(true);
   });
 
   it("returns public-hosting diagnostics and support bundle", async () => {

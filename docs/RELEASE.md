@@ -2,7 +2,7 @@
 
 SimpleServers ships desktop artifacts via Electron Builder and GitHub Actions.
 
-Canonical repository: `https://github.com/dueldev/SimpleServers`
+Canonical repository: `https://github.com/charlesshaw3/SimpleServers`
 
 ## Workflows
 
@@ -95,6 +95,11 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.3.1`
+  - Added multi-server bulk actions (`start`, `stop`, `restart`, `backup`, `goLive`) with per-server success/failure summaries.
+  - Added per-server Performance Advisor endpoint/UI with RAM/CPU snapshots, startup trend analysis, and tick-lag detection hints.
+  - Added `/system/trust` and a new Trust dashboard view for build signature/provenance visibility plus active security control transparency.
+  - Added persisted performance/startup/tick-lag telemetry tables with rolling retention pruning.
 - `v0.2.2`
   - Added a command-center overview with two primary actions (`Create Server`, `Go Live`) and goal-first cards (`Start`, `Share`, `Fix`).
   - Added Network Health panel + diagnostics fix metadata so dependency/auth/endpoint/retry issues now have one-click recovery actions.

@@ -6,6 +6,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
   let stopCalled = false;
   let stopUsedEmptyJsonHeader = false;
   let telemetryPosted = false;
+  let bulkCalled = false;
 
   await page.route("http://127.0.0.1:4010/**", async (route) => {
     const request = route.request();
@@ -210,6 +211,57 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/servers/srv_1/performance/advisor" && method === "GET") {
+      await withJson(200, {
+        server: {
+          id: "srv_1",
+          name: "Test Server",
+          status: "running",
+          maxMemoryMb: 4096
+        },
+        advisor: {
+          windowHours: 24,
+          sampleCount: 6,
+          metrics: {
+            latest: {
+              sampledAt: new Date().toISOString(),
+              cpuPercent: 44,
+              memoryMb: 1800
+            },
+            cpu: {
+              avgPercent: 38,
+              peakPercent: 82
+            },
+            memory: {
+              avgMb: 1500,
+              peakMb: 2100,
+              configuredMaxMb: 4096
+            }
+          },
+          startup: {
+            trend: "stable",
+            recent: [],
+            averageDurationMs: 18000,
+            latestDurationMs: 17500
+          },
+          tickLag: {
+            eventsInWindow: 1,
+            lastEventAt: new Date().toISOString(),
+            maxLagMs: 900,
+            recent: []
+          },
+          hints: [
+            {
+              level: "ok",
+              title: "Memory headroom is healthy",
+              detail: "Average memory usage is healthy."
+            }
+          ]
+        }
+      });
+      return;
+    }
+
     if (pathname === "/servers/srv_1/public-hosting/status" && method === "GET") {
       await withJson(200, {
         server: {
@@ -388,6 +440,37 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/system/trust" && method === "GET") {
+      await withJson(200, {
+        generatedAt: new Date().toISOString(),
+        build: {
+          appVersion: "0.3.1",
+          platform: "darwin",
+          arch: "arm64",
+          nodeVersion: "v20.0.0",
+          mode: "development",
+          signatureStatus: "development",
+          signatureProvider: null,
+          releaseChannel: "stable",
+          repository: "https://github.com/charlesshaw3/SimpleServers"
+        },
+        verification: {
+          checksumUrl: null,
+          attestationUrl: null
+        },
+        security: {
+          localOnlyByDefault: true,
+          authModel: "token-rbac",
+          auditTrailEnabled: true,
+          remoteControlEnabled: false,
+          remoteTokenRequired: true,
+          configuredRemoteToken: false,
+          allowedOrigins: []
+        }
+      });
+      return;
+    }
+
     if (pathname === "/telemetry/funnel" && method === "GET") {
       await withJson(200, {
         windowHours: 168,
@@ -463,6 +546,25 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/servers/bulk-action" && method === "POST") {
+      bulkCalled = true;
+      await withJson(200, {
+        ok: true,
+        action: "backup",
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+        results: [
+          {
+            serverId: "srv_1",
+            ok: true,
+            message: "Backup created"
+          }
+        ]
+      });
+      return;
+    }
+
     await withJson(404, { error: `Unhandled ${method} ${pathname}` });
   });
 
@@ -471,6 +573,9 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Server Fleet" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Test Server" })).toBeVisible();
+  await page.getByRole("checkbox", { name: "Select Test Server" }).check();
+  await page.getByRole("button", { name: "Backup Selected" }).click();
+  await expect.poll(() => bulkCalled).toBe(true);
   await page.getByRole("button", { name: "Stop" }).first().click();
   await expect.poll(() => stopCalled).toBe(true);
   await expect.poll(() => stopUsedEmptyJsonHeader).toBe(false);
@@ -486,6 +591,10 @@ test("connects and renders dashboard sections", async ({ page }) => {
   await page.getByRole("button", { name: "Content" }).click();
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("Sodium")).toBeVisible();
+
+  await page.getByRole("button", { name: "Trust" }).click();
+  await expect(page.getByRole("heading", { name: "Security Transparency" })).toBeVisible();
+  await page.getByRole("button", { name: "Content" }).click();
 
   await page.getByRole("button", { name: "Install" }).click();
   await expect.poll(() => installCalled).toBe(true);
