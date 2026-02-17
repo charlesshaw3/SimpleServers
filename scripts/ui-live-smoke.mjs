@@ -67,19 +67,22 @@ async function runDesktopSmoke(browser) {
   await page.goto(WEB_URL, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Connect" }).click();
   await page.getByText("CONNECTED").first().waitFor({ timeout: 20_000 });
-  const nav = page.getByLabel("Workspace views");
+  await page.getByRole("heading", { name: "Servers", exact: true }).waitFor({ timeout: 20_000 });
 
-  await nav.getByRole("button", { name: "Create" }).click();
-  await page.getByRole("heading", { name: "Create" }).waitFor({ timeout: 15_000 });
-
-  await nav.getByRole("button", { name: "Fix" }).click();
-  await page.getByRole("heading", { name: /^Fix$/ }).waitFor({ timeout: 15_000 });
-
-  await page.getByRole("button", { name: "Advanced Controls" }).click();
-  await page.getByRole("heading", { name: "Advanced Workspace" }).waitFor({ timeout: 15_000 });
-
-  await nav.getByRole("button", { name: "Content" }).click();
-  await page.getByRole("heading", { name: "Content Manager" }).waitFor({ timeout: 15_000 });
+  const openWorkspaceButtons = page.getByRole("button", { name: "Open Workspace" });
+  if ((await openWorkspaceButtons.count()) > 0) {
+    await openWorkspaceButtons.first().click();
+    await page.getByRole("heading", { name: "Server Controls" }).waitFor({ timeout: 20_000 });
+    await page.getByRole("button", { name: "Console" }).click();
+    await page.getByRole("heading", { name: "Preflight Diagnostics" }).waitFor({ timeout: 20_000 });
+  } else {
+    const createButtons = page.getByRole("button", { name: /Create Server|Create Your First Server/ });
+    if ((await createButtons.count()) === 0) {
+      throw new Error("Neither workspace nor create entry points were visible in v2 shell.");
+    }
+    await createButtons.first().click();
+    await page.getByRole("heading", { name: "Minecraft Server Setup Wizard" }).waitFor({ timeout: 20_000 });
+  }
   await page.close();
 }
 
@@ -88,13 +91,21 @@ async function runMobileSmoke(browser) {
   await page.goto(WEB_URL, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Connect" }).click();
   await page.getByText("CONNECTED").first().waitFor({ timeout: 20_000 });
-  const nav = page.getByLabel("Workspace views");
+  await page.getByRole("heading", { name: "Servers", exact: true }).waitFor({ timeout: 20_000 });
 
-  await nav.getByRole("button", { name: "Create" }).click();
-  await page.getByRole("heading", { name: "Create" }).waitFor({ timeout: 15_000 });
-
-  await nav.getByRole("button", { name: "Home" }).click();
-  await page.getByRole("heading", { name: "Home" }).waitFor({ timeout: 15_000 });
+  const createButtons = page.getByRole("button", { name: /Create Server|Create Your First Server/ });
+  if ((await createButtons.count()) > 0) {
+    await createButtons.first().click();
+    await page.getByRole("heading", { name: "Minecraft Server Setup Wizard" }).waitFor({ timeout: 20_000 });
+  } else {
+    const openWorkspaceButtons = page.getByRole("button", { name: "Open Workspace" });
+    if ((await openWorkspaceButtons.count()) > 0) {
+      await openWorkspaceButtons.first().click();
+      await page.getByRole("heading", { name: "Server Controls" }).waitFor({ timeout: 20_000 });
+    } else {
+      throw new Error("Mobile smoke could not find create or workspace entry points.");
+    }
+  }
   await page.close();
 }
 

@@ -11,14 +11,41 @@ type SettingsTabProps = {
   themePreference: ThemePreference;
   remoteState: RemoteState | null;
   trustSigned: boolean | null;
+  publicHostingSettings: {
+    autoEnable: boolean;
+    defaultProvider: "playit" | "cloudflared" | "ngrok" | "manual";
+    consentVersion: string | null;
+    consentAcceptedAt: string | null;
+    consentCurrentVersion: string;
+    consentRequired?: boolean;
+  } | null;
+  savingPublicHostingSettings: boolean;
+  playitTermsUrl: string;
+  playitPrivacyUrl: string;
   onThemeChange: (theme: ThemePreference) => void;
+  onSavePublicHostingSettings: (patch: Partial<{ autoEnable: boolean; defaultProvider: "playit" | "cloudflared" | "ngrok" | "manual"; consentAccepted: boolean }>) => void;
+  onEnableQuickHosting: (provider?: "playit" | "cloudflared" | "ngrok" | "manual") => void;
   onOpenLegacyWorkspace: () => void;
   onRunCrashDoctor: () => void;
   onRefreshAll: () => void;
 };
 
 export function SettingsTab(props: SettingsTabProps) {
-  const { themePreference, remoteState, trustSigned, onThemeChange, onOpenLegacyWorkspace, onRunCrashDoctor, onRefreshAll } = props;
+  const {
+    themePreference,
+    remoteState,
+    trustSigned,
+    publicHostingSettings,
+    savingPublicHostingSettings,
+    playitTermsUrl,
+    playitPrivacyUrl,
+    onThemeChange,
+    onSavePublicHostingSettings,
+    onEnableQuickHosting,
+    onOpenLegacyWorkspace,
+    onRunCrashDoctor,
+    onRefreshAll
+  } = props;
 
   return (
     <section className="v2-settings-tab">
@@ -43,6 +70,65 @@ export function SettingsTab(props: SettingsTabProps) {
             </button>
           </div>
         </div>
+      </article>
+
+      <article className="panel">
+        <h3>Public Hosting Defaults</h3>
+        <p className="muted-note">Default provider and automatic tunneling behavior for this server.</p>
+        <div className="grid-form">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(publicHostingSettings?.autoEnable)}
+              onChange={(event) => onSavePublicHostingSettings({ autoEnable: event.target.checked })}
+              disabled={savingPublicHostingSettings}
+            />
+            Auto-enable public hosting on start/restart
+          </label>
+          <label>
+            Default Provider
+            <select
+              value={publicHostingSettings?.defaultProvider ?? "playit"}
+              onChange={(event) =>
+                onSavePublicHostingSettings({
+                  defaultProvider: event.target.value as "playit" | "cloudflared" | "ngrok" | "manual"
+                })
+              }
+              disabled={savingPublicHostingSettings}
+            >
+              <option value="playit">playit</option>
+              <option value="cloudflared">cloudflared</option>
+              <option value="ngrok">ngrok</option>
+              <option value="manual">manual</option>
+            </select>
+          </label>
+          <div className="inline-actions">
+            <button
+              type="button"
+              onClick={() => onEnableQuickHosting(publicHostingSettings?.defaultProvider ?? "playit")}
+              disabled={savingPublicHostingSettings}
+            >
+              Enable Now
+            </button>
+            {publicHostingSettings?.defaultProvider === "playit" &&
+            (publicHostingSettings?.consentRequired || !publicHostingSettings?.consentAcceptedAt) ? (
+              <button type="button" onClick={() => onSavePublicHostingSettings({ consentAccepted: true })} disabled={savingPublicHostingSettings}>
+                Accept Playit Terms
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <p className="muted-note">
+          Public hosting uses Playit.gg by default. By enabling it, you agree to{" "}
+          <a href={playitTermsUrl} target="_blank" rel="noreferrer">
+            Playit Terms
+          </a>{" "}
+          and{" "}
+          <a href={playitPrivacyUrl} target="_blank" rel="noreferrer">
+            Playit Privacy Policy
+          </a>
+          .
+        </p>
       </article>
 
       <article className="panel">
@@ -77,11 +163,19 @@ export function SettingsTab(props: SettingsTabProps) {
       <details className="panel">
         <summary>Advanced Tools</summary>
         <p className="muted-note">
-          Full expert surfaces remain available in the legacy workspace while v2 parity rollout continues.
+          Advanced operations remain available here, with legacy fallback for deep admin workflows.
         </p>
-        <button type="button" onClick={onOpenLegacyWorkspace}>
-          Open Legacy Workspace
-        </button>
+        <div className="inline-actions">
+          <button type="button" onClick={onRefreshAll}>
+            Refresh Diagnostics
+          </button>
+          <button type="button" onClick={onRunCrashDoctor}>
+            Crash Doctor
+          </button>
+          <button type="button" onClick={onOpenLegacyWorkspace}>
+            Open Legacy Workspace
+          </button>
+        </div>
       </details>
     </section>
   );

@@ -24,6 +24,7 @@ type WorkspaceLayoutProps = {
   players: WorkspacePlayer[];
   playerSearch: string;
   onPlayerSearchChange: (value: string) => void;
+  onSelectPlayer: (player: WorkspacePlayer) => void;
   children: ReactNode;
 };
 
@@ -54,6 +55,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
     players,
     playerSearch,
     onPlayerSearchChange,
+    onSelectPlayer,
     children
   } = props;
 
@@ -117,10 +119,17 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           <ul className="list list-compact">
             {filteredPlayers.map((entry) => (
               <li key={entry.uuid}>
-                <div>
-                  <strong>{entry.name}</strong>
-                  <span>{entry.uuid}</span>
-                </div>
+                <button
+                  type="button"
+                  className="player-row-btn"
+                  onClick={() => onSelectPlayer(entry)}
+                  aria-label={`Open player profile for ${entry.name}`}
+                >
+                  <div>
+                    <strong>{entry.name}</strong>
+                    <span>{entry.uuid}</span>
+                  </div>
+                </button>
               </li>
             ))}
             {filteredPlayers.length === 0 ? (

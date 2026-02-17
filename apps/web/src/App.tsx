@@ -10,6 +10,7 @@ import { PlayersTab } from "./features/workspace/tabs/PlayersTab";
 import { BackupsTab } from "./features/workspace/tabs/BackupsTab";
 import { SchedulerTab } from "./features/workspace/tabs/SchedulerTab";
 import { SettingsTab } from "./features/workspace/tabs/SettingsTab";
+import { PlayerProfileModal } from "./features/workspace/components/PlayerProfileModal";
 
 type Server = {
   id: string;
@@ -58,6 +59,15 @@ type Tunnel = {
   status: string;
 };
 
+type PublicHostingSettings = {
+  autoEnable: boolean;
+  defaultProvider: "playit" | "cloudflared" | "ngrok" | "manual";
+  consentVersion: string | null;
+  consentAcceptedAt: string | null;
+  consentCurrentVersion: string;
+  consentRequired?: boolean;
+};
+
 type QuickHostingStatus = {
   server: {
     id: string;
@@ -68,6 +78,7 @@ type QuickHostingStatus = {
   quickHostReady: boolean;
   publicAddress: string | null;
   tunnel: Tunnel | null;
+  settings?: PublicHostingSettings;
   steps: string[];
 };
 
@@ -87,6 +98,10 @@ type QuickHostingDiagnostics = {
       lastAttemptAt: string | null;
       lastSuccessAt: string | null;
     };
+    authRequired: boolean;
+    authUrl: string | null;
+    authCode: string | null;
+    authObservedAt: string | null;
     message: string | null;
   } | null;
   actions: string[];
@@ -95,6 +110,12 @@ type QuickHostingDiagnostics = {
     label: string;
     description: string;
   }>;
+  settings?: PublicHostingSettings;
+  legal?: {
+    playitTermsUrl: string;
+    playitPrivacyUrl: string;
+    consentVersion: string;
+  };
 };
 
 type QuickStartResult = {
@@ -155,7 +176,12 @@ type WorkspaceSummary = {
   };
   tunnel: {
     enabled: boolean;
+    autoEnable?: boolean;
     provider: string | null;
+    defaultProvider?: "playit" | "cloudflared" | "ngrok" | "manual";
+    consentVersion?: string | null;
+    consentAcceptedAt?: string | null;
+    consentCurrentVersion?: string;
     status: string;
     publicAddress: string | null;
     endpointPending: boolean;
@@ -190,6 +216,9 @@ type SimpleStatus = {
   };
   quickHosting: {
     enabled: boolean;
+    autoEnable?: boolean;
+    defaultProvider?: "playit" | "cloudflared" | "ngrok" | "manual";
+    consentRequired?: boolean;
     status: string;
     endpointPending: boolean;
     diagnostics: {
@@ -419,6 +448,15 @@ type PlayerAdminState = {
   knownPlayers: Array<{
     name: string;
     uuid: string;
+  }>;
+  profiles?: Array<{
+    name: string;
+    uuid: string;
+    isOp: boolean;
+    isWhitelisted: boolean;
+    isBanned: boolean;
+    lastSeenAt: string | null;
+    lastActionAt: string | null;
   }>;
   history: Array<{
     ts: string;
@@ -1070,6 +1108,8 @@ export default function App() {
   const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
   const [quickHostingStatus, setQuickHostingStatus] = useState<QuickHostingStatus | null>(null);
   const [quickHostingDiagnostics, setQuickHostingDiagnostics] = useState<QuickHostingDiagnostics | null>(null);
+  const [publicHostingSettings, setPublicHostingSettings] = useState<PublicHostingSettings | null>(null);
+  const [savingPublicHostingSettings, setSavingPublicHostingSettings] = useState(false);
   const [quickHostRetryCountdown, setQuickHostRetryCountdown] = useState<number | null>(null);
   const [showPlayitSecretForm, setShowPlayitSecretForm] = useState(false);
   const [playitSecretInput, setPlayitSecretInput] = useState("");
@@ -1102,7 +1142,9 @@ export default function App() {
   const [playerActionName, setPlayerActionName] = useState("");
   const [playerActionUuid, setPlayerActionUuid] = useState("");
   const [playerBanReason, setPlayerBanReason] = useState("");
+  const [playerProfileBanReason, setPlayerProfileBanReason] = useState("");
   const [playerIpInput, setPlayerIpInput] = useState("");
+  const [selectedPlayerProfile, setSelectedPlayerProfile] = useState<{ name: string; uuid: string } | null>(null);
 
   const [createServer, setCreateServer] = useState({
     name: "My Server",
@@ -1561,10 +1603,12 @@ export default function App() {
         setCrashReports([]);
         setQuickHostingStatus(null);
         setQuickHostingDiagnostics(null);
+        setPublicHostingSettings(null);
         setSimpleStatus(null);
         setWorkspaceSummary(null);
         setSimpleFixResult(null);
         setPlayerAdminState(null);
+        setSelectedPlayerProfile(null);
         setPerformanceAdvisor(null);
         setEditorFiles([]);
         setEditorFileSnapshots([]);
@@ -1681,9 +1725,13 @@ export default function App() {
     }
     if (quickHostRes.status === "fulfilled") {
       setQuickHostingStatus(quickHostRes.value);
+      setPublicHostingSettings(quickHostRes.value.settings ?? null);
     }
     if (quickHostDiagnosticsRes.status === "fulfilled") {
       setQuickHostingDiagnostics(quickHostDiagnosticsRes.value);
+      if (quickHostDiagnosticsRes.value.settings) {
+        setPublicHostingSettings(quickHostDiagnosticsRes.value.settings);
+      }
     }
     if (performanceRes.status === "fulfilled") {
       setPerformanceAdvisor(performanceRes.value);
@@ -1962,6 +2010,8 @@ export default function App() {
     setContentResults([]);
     setSimpleFixResult(null);
     setWorkspaceSummary(null);
+    setPublicHostingSettings(null);
+    setSelectedPlayerProfile(null);
   }, [selectedServerId]);
 
   useEffect(() => {
@@ -2615,6 +2665,17 @@ export default function App() {
       if (response.server?.id) {
         setSelectedServerId(response.server.id);
         setV2WizardProgress((previous) => [...previous, "Server created and selected."]);
+        if (createServer.quickPublicHosting) {
+          try {
+            await api.current.put<{ settings: PublicHostingSettings }>(`/servers/${response.server.id}/public-hosting/settings`, {
+              autoEnable: true,
+              defaultProvider: "playit",
+              consentAccepted: true
+            });
+          } catch {
+            setV2WizardProgress((previous) => [...previous, "Playit consent still required in Settings before public hosting."]);
+          }
+        }
       }
       if (response.started) {
         setV2WizardProgress((previous) => [...previous, "Runtime started."]);
@@ -3081,10 +3142,15 @@ export default function App() {
 
   async function serverAction(serverId: string, action: "start" | "stop" | "restart"): Promise<void> {
     try {
-      const result = await api.current.post<{ ok: boolean; blocked?: boolean; preflight?: PreflightReport }>(`/servers/${serverId}/${action}`);
+      const result = await api.current.post<{ ok: boolean; blocked?: boolean; preflight?: PreflightReport; warning?: string | null }>(
+        `/servers/${serverId}/${action}`
+      );
       if (result.blocked) {
         setPreflight(result.preflight ?? null);
         setError("Start blocked by preflight checks. Resolve critical issues and retry.");
+      }
+      if (result.warning) {
+        setNotice(result.warning);
       }
       if ((action === "start" || action === "restart") && result.ok && !result.blocked && markTelemetryKey(`server.start.success:${serverId}`)) {
         void trackTelemetryEvent("server.start.success", {
@@ -3170,13 +3236,42 @@ export default function App() {
     }
   }
 
-  async function enableQuickHosting(): Promise<void> {
+  async function savePublicHostingSettings(
+    patch: Partial<{
+      autoEnable: boolean;
+      defaultProvider: "playit" | "cloudflared" | "ngrok" | "manual";
+      consentAccepted: boolean;
+    }>
+  ): Promise<void> {
     if (!selectedServerId) {
       return;
     }
 
     try {
-      await api.current.post(`/servers/${selectedServerId}/public-hosting/quick-enable`, {});
+      setSavingPublicHostingSettings(true);
+      const response = await api.current.put<{ settings: PublicHostingSettings }>(
+        `/servers/${selectedServerId}/public-hosting/settings`,
+        patch
+      );
+      setPublicHostingSettings(response.settings);
+      await refreshServerOperations(selectedServerId, { background: true });
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingPublicHostingSettings(false);
+    }
+  }
+
+  async function enableQuickHosting(provider?: "playit" | "cloudflared" | "ngrok" | "manual"): Promise<void> {
+    if (!selectedServerId) {
+      return;
+    }
+
+    try {
+      await api.current.post(`/servers/${selectedServerId}/public-hosting/quick-enable`, {
+        provider
+      });
       await refreshServerOperations(selectedServerId);
       await refreshAll();
     } catch (e) {
@@ -3554,6 +3649,14 @@ export default function App() {
       setApplyingNetworkFix(fixId);
       if (fixId === "enable_quick_hosting") {
         await api.current.post(`/servers/${selectedServerId}/public-hosting/quick-enable`, {});
+      } else if (fixId === "open_playit_auth") {
+        const authUrl = quickHostingDiagnostics?.diagnostics?.authUrl ?? "https://playit.gg/account/agents";
+        if (authUrl) {
+          window.open(authUrl, "_blank", "noopener,noreferrer");
+          setNotice("Opened Playit authorization in a new tab.");
+        } else {
+          setNotice("No Playit authorization URL available yet.");
+        }
       } else if (fixId === "start_server") {
         await serverAction(selectedServerId, "start");
       } else if (fixId === "start_tunnel") {
@@ -3565,7 +3668,9 @@ export default function App() {
         await refreshServerOperations(selectedServerId);
       } else if (fixId === "copy_playit_auth_steps") {
         copyAddress(
-          "Run `playit` once to complete login, or set PLAYIT_SECRET / PLAYIT_SECRET_PATH so SimpleServers can sync your endpoint."
+          quickHostingDiagnostics?.diagnostics?.authUrl
+            ? `Open ${quickHostingDiagnostics.diagnostics.authUrl} and complete agent auth, then return to SimpleServers and refresh diagnostics.`
+            : "Open the Playit dashboard, complete agent auth, then retry diagnostics."
         );
         setNotice("Copied Playit auth steps to clipboard.");
       } else if (fixId === "set_playit_secret") {
@@ -4123,6 +4228,36 @@ export default function App() {
     }
   }
 
+  function openPlayerProfile(profile: { name: string; uuid: string }): void {
+    setSelectedPlayerProfile(profile);
+    setPlayerProfileBanReason("");
+    setError(null);
+  }
+
+  async function runPlayerProfileAction(action: "op" | "deop" | "whitelist" | "unwhitelist" | "ban" | "unban"): Promise<void> {
+    if (!selectedServerId || !selectedPlayerProfile) {
+      return;
+    }
+
+    try {
+      setRunningPlayerAction(`profile-${action}`);
+      const response = await api.current.post<{ state: PlayerAdminState }>(`/servers/${selectedServerId}/player-admin/action`, {
+        action,
+        name: selectedPlayerProfile.name,
+        uuid: selectedPlayerProfile.uuid,
+        reason: action === "ban" ? playerProfileBanReason.trim() || undefined : undefined
+      });
+      setPlayerAdminState(response.state);
+      await refreshServerOperations(selectedServerId, { background: true });
+      setNotice(`${action} applied for ${selectedPlayerProfile.name}.`);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunningPlayerAction(null);
+    }
+  }
+
   async function addOpPlayer(): Promise<void> {
     const name = playerActionName.trim();
     if (!name) {
@@ -4523,6 +4658,32 @@ export default function App() {
     progress: v2WizardProgress,
     inviteAddress: v2WizardInviteAddress
   };
+  const playerProfiles =
+    playerAdminState?.profiles ??
+    (playerAdminState?.knownPlayers ?? []).map((entry) => ({
+      name: entry.name,
+      uuid: entry.uuid,
+      isOp: false,
+      isWhitelisted: false,
+      isBanned: false,
+      lastSeenAt: null,
+      lastActionAt: null
+    }));
+  const activePlayerProfile =
+    selectedPlayerProfile === null
+      ? null
+      : playerProfiles.find(
+          (entry) =>
+            entry.uuid.toLowerCase() === selectedPlayerProfile.uuid.toLowerCase() ||
+            entry.name.toLowerCase() === selectedPlayerProfile.name.toLowerCase()
+        ) ?? {
+          ...selectedPlayerProfile,
+          isOp: false,
+          isWhitelisted: false,
+          isBanned: false,
+          lastSeenAt: null,
+          lastActionAt: null
+        };
   const workspacePlayers = workspaceSummary?.players.list ?? playerAdminState?.knownPlayers ?? [];
   const v2UptimeSeconds =
     workspaceSummary?.metrics.uptimeSeconds ??
@@ -4636,6 +4797,9 @@ export default function App() {
         onUnbanIp={() => {
           void unbanIpAddress();
         }}
+        onOpenProfile={(player) => {
+          openPlayerProfile(player);
+        }}
       />
     ) : v2Route.tab === "backups" ? (
       <BackupsTab
@@ -4690,7 +4854,17 @@ export default function App() {
         themePreference={themePreference}
         remoteState={remoteState}
         trustSigned={resolvedSignatureStatus === null ? null : resolvedSignatureStatus === "signed"}
+        publicHostingSettings={publicHostingSettings}
+        savingPublicHostingSettings={savingPublicHostingSettings}
+        playitTermsUrl={quickHostingDiagnostics?.legal?.playitTermsUrl ?? "https://playit.gg/terms-of-service"}
+        playitPrivacyUrl={quickHostingDiagnostics?.legal?.playitPrivacyUrl ?? "https://playit.gg/privacy-policy"}
         onThemeChange={setThemePreference}
+        onSavePublicHostingSettings={(patch) => {
+          void savePublicHostingSettings(patch);
+        }}
+        onEnableQuickHosting={(provider) => {
+          void enableQuickHosting(provider);
+        }}
         onOpenLegacyWorkspace={openLegacyWorkspace}
         onRunCrashDoctor={() => {
           void runCrashDoctor();
@@ -4782,6 +4956,7 @@ export default function App() {
               players={workspacePlayers}
               playerSearch={workspacePlayerSearch}
               onPlayerSearchChange={setWorkspacePlayerSearch}
+              onSelectPlayer={(player) => openPlayerProfile(player)}
             >
               {workspaceTabContent}
             </WorkspaceLayout>
@@ -4842,6 +5017,18 @@ export default function App() {
             openV2Workspace(selectedServerId, "dashboard");
           }}
         />
+
+        <PlayerProfileModal
+          visible={selectedPlayerProfile !== null}
+          profile={activePlayerProfile}
+          runningAction={runningPlayerAction}
+          banReason={playerProfileBanReason}
+          onBanReasonChange={setPlayerProfileBanReason}
+          onClose={() => setSelectedPlayerProfile(null)}
+          onRunAction={(action) => {
+            void runPlayerProfileAction(action);
+          }}
+        />
       </div>
     );
   }
@@ -4851,7 +5038,7 @@ export default function App() {
       {!uiV2ShellEnabled ? (
         <section className="panel">
           <h2>Legacy Workspace</h2>
-          <p className="muted-note">You are using legacy mode. Switch back to the new Squid-style shell at any time.</p>
+          <p className="muted-note">You are using legacy mode. Switch back to the new workspace shell at any time.</p>
           <button type="button" onClick={() => setUiV2ShellEnabled(true)}>
             Switch to New Shell
           </button>

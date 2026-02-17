@@ -4,6 +4,15 @@ type PlayerAdminState = {
   bannedPlayers: Array<{ uuid: string; name: string; reason: string }>;
   bannedIps: Array<{ ip: string; reason: string }>;
   knownPlayers: Array<{ name: string; uuid: string }>;
+  profiles?: Array<{
+    name: string;
+    uuid: string;
+    isOp: boolean;
+    isWhitelisted: boolean;
+    isBanned: boolean;
+    lastSeenAt: string | null;
+    lastActionAt: string | null;
+  }>;
   history: Array<{ ts: string; kind: string; subject: string; detail: string; source: "admin" | "runtime" }>;
 };
 
@@ -26,6 +35,7 @@ type PlayersTabProps = {
   onUnbanPlayer: () => void;
   onBanIp: () => void;
   onUnbanIp: () => void;
+  onOpenProfile: (player: { name: string; uuid: string }) => void;
 };
 
 export function PlayersTab(props: PlayersTabProps) {
@@ -47,8 +57,11 @@ export function PlayersTab(props: PlayersTabProps) {
     onBanPlayer,
     onUnbanPlayer,
     onBanIp,
-    onUnbanIp
+    onUnbanIp,
+    onOpenProfile
   } = props;
+
+  const profileRows = (state?.profiles ?? state?.knownPlayers ?? []).slice(0, 18);
 
   return (
     <section className="v2-players-tab">
@@ -104,12 +117,22 @@ export function PlayersTab(props: PlayersTabProps) {
         <article className="panel">
           <h3>Known Players</h3>
           <ul className="list list-compact">
-            {(state?.knownPlayers ?? []).slice(0, 18).map((entry) => (
+            {profileRows.map((entry) => (
               <li key={entry.uuid}>
-                <div>
-                  <strong>{entry.name}</strong>
-                  <span>{entry.uuid}</span>
-                </div>
+                <button
+                  type="button"
+                  className="player-row-btn"
+                  onClick={() => onOpenProfile({ name: entry.name, uuid: entry.uuid })}
+                  aria-label={`Open player profile for ${entry.name}`}
+                >
+                  <div>
+                    <strong>{entry.name}</strong>
+                    <span>{entry.uuid}</span>
+                    {"isOp" in entry && entry.isOp ? <span className="status-pill tone-neutral">op</span> : null}
+                    {"isWhitelisted" in entry && entry.isWhitelisted ? <span className="status-pill tone-ok">whitelist</span> : null}
+                    {"isBanned" in entry && entry.isBanned ? <span className="status-pill tone-warn">banned</span> : null}
+                  </div>
+                </button>
               </li>
             ))}
             {(state?.knownPlayers.length ?? 0) === 0 ? (

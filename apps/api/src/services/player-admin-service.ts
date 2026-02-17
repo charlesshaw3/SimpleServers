@@ -40,6 +40,16 @@ type PlayerHistoryEntry = {
   source: "admin" | "runtime";
 };
 
+type PlayerProfile = {
+  name: string;
+  uuid: string;
+  isOp: boolean;
+  isWhitelisted: boolean;
+  isBanned: boolean;
+  lastSeenAt: string | null;
+  lastActionAt: string | null;
+};
+
 function normalizeName(value: string): string {
   return value.trim();
 }
@@ -150,6 +160,7 @@ export class PlayerAdminService {
     bannedPlayers: PlayerBanEntry[];
     bannedIps: IpBanEntry[];
     knownPlayers: Array<{ name: string; uuid: string }>;
+    profiles: PlayerProfile[];
     history: PlayerHistoryEntry[];
   } {
     const server = this.resolveServer(serverId);
@@ -178,9 +189,46 @@ export class PlayerAdminService {
       source: "admin" as const
     }));
     const runtimeHistory = parseRuntimePlayerHistory(server.rootPath, historyLimit);
+
+    for (const entry of runtimeHistory) {
+      const name = entry.subject.trim();
+      if (!name) {
+        continue;
+      }
+      const key = normalizeId(name);
+      if (!known.has(key)) {
+        known.set(key, {
+          name,
+          uuid: uuidFallback(name)
+        });
+      }
+    }
+
     const history = [...adminHistory, ...runtimeHistory]
       .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime())
       .slice(0, historyLimit);
+
+    const opKeys = new Set(ops.flatMap((entry) => [normalizeId(entry.uuid), normalizeId(entry.name)]));
+    const whitelistKeys = new Set(whitelist.flatMap((entry) => [normalizeId(entry.uuid), normalizeId(entry.name)]));
+    const bannedKeys = new Set(bannedPlayers.flatMap((entry) => [normalizeId(entry.uuid), normalizeId(entry.name)]));
+
+    const profiles = [...known.values()]
+      .map((entry) => {
+        const keyUuid = normalizeId(entry.uuid);
+        const keyName = normalizeId(entry.name);
+        const lastRuntime = runtimeHistory.find((event) => normalizeId(event.subject) === keyName);
+        const lastAdmin = adminHistory.find((event) => normalizeId(event.subject) === keyName || normalizeId(event.subject) === keyUuid);
+        return {
+          name: entry.name,
+          uuid: entry.uuid,
+          isOp: opKeys.has(keyUuid) || opKeys.has(keyName),
+          isWhitelisted: whitelistKeys.has(keyUuid) || whitelistKeys.has(keyName),
+          isBanned: bannedKeys.has(keyUuid) || bannedKeys.has(keyName),
+          lastSeenAt: lastRuntime?.ts ?? null,
+          lastActionAt: lastAdmin?.ts ?? null
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     return {
       ops,
@@ -188,8 +236,37 @@ export class PlayerAdminService {
       bannedPlayers,
       bannedIps,
       knownPlayers: [...known.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      profiles,
       history
     };
+  }
+
+  applyAction(input: {
+    serverId: string;
+    action: "op" | "deop" | "whitelist" | "unwhitelist" | "ban" | "unban";
+    name: string;
+    uuid?: string;
+    reason?: string;
+  }): ReturnType<PlayerAdminService["getState"]> {
+    const name = normalizeName(input.name);
+    const uuid = input.uuid?.trim() || undefined;
+    const target = uuid ?? name;
+
+    if (input.action === "op") {
+      this.addOp({ serverId: input.serverId, name, uuid });
+    } else if (input.action === "deop") {
+      this.removeOp(input.serverId, target);
+    } else if (input.action === "whitelist") {
+      this.addWhitelist(input.serverId, name, uuid);
+    } else if (input.action === "unwhitelist") {
+      this.removeWhitelist(input.serverId, target);
+    } else if (input.action === "ban") {
+      this.banPlayer({ serverId: input.serverId, name, uuid, reason: input.reason });
+    } else if (input.action === "unban") {
+      this.unbanPlayer(input.serverId, target);
+    }
+
+    return this.getState(input.serverId, 200);
   }
 
   addOp(input: {

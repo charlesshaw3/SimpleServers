@@ -41,6 +41,9 @@ type PlayitSyncState = {
   lastPendingReason: string | null;
   lastError: string | null;
   endpointAssigned: boolean;
+  authUrl: string | null;
+  authCode: string | null;
+  authObservedAt: string | null;
 };
 
 type PlayitPortType = "tcp" | "udp" | "both";
@@ -172,6 +175,72 @@ export class TunnelService {
     });
   }
 
+  ensurePreferredQuickTunnel(
+    serverId: string,
+    provider: TunnelRecord["provider"],
+    input?: {
+      localPort?: number;
+      protocol?: TunnelRecord["protocol"];
+    }
+  ): TunnelRecord {
+    const server = store.getServerById(serverId);
+    if (!server) {
+      throw new Error("Server not found");
+    }
+
+    const existing = store.listTunnels(serverId).find((tunnel) => tunnel.provider === provider);
+    if (existing) {
+      return existing;
+    }
+
+    const port = input?.localPort ?? server.port;
+    const protocol = input?.protocol ?? "tcp";
+
+    if (provider === "manual") {
+      return this.createTunnel({
+        serverId,
+        provider,
+        protocol,
+        localPort: port,
+        publicHost: "manual.local",
+        publicPort: port,
+        config: {}
+      });
+    }
+
+    if (provider === "ngrok") {
+      return this.createTunnel({
+        serverId,
+        provider,
+        protocol,
+        localPort: port,
+        publicHost: "pending.ngrok.io",
+        publicPort: port,
+        config: {
+          command: "ngrok",
+          args: [protocol, String(port)]
+        }
+      });
+    }
+
+    if (provider === "cloudflared") {
+      return this.createTunnel({
+        serverId,
+        provider,
+        protocol,
+        localPort: port,
+        publicHost: "pending.cloudflare.com",
+        publicPort: port,
+        config: {
+          command: "cloudflared",
+          args: ["access", "tcp", "--hostname", "pending.cloudflare.com", "--url", `localhost:${String(port)}`]
+        }
+      });
+    }
+
+    return this.ensureQuickTunnel(serverId, input);
+  }
+
   async startTunnelsForServer(serverId: string): Promise<void> {
     const tunnels = store.listTunnels(serverId);
     for (const tunnel of tunnels) {
@@ -234,6 +303,16 @@ export class TunnelService {
       const lines = chunk.toString().split(/\r?\n/).filter(Boolean);
       for (const line of lines) {
         this.consoleHub.publish(tunnel.serverId, `${logPrefix} ${line}`);
+        if (tunnel.provider === "playit") {
+          const signal = parsePlayitAuthSignal(line);
+          if (signal) {
+            this.setPlayitSyncState(tunnel.id, {
+              authUrl: signal.authUrl ?? this.getPlayitSyncState(tunnel.id).authUrl,
+              authCode: signal.authCode ?? this.getPlayitSyncState(tunnel.id).authCode,
+              authObservedAt: nowIso()
+            });
+          }
+        }
       }
     });
 
@@ -241,6 +320,16 @@ export class TunnelService {
       const lines = chunk.toString().split(/\r?\n/).filter(Boolean);
       for (const line of lines) {
         this.consoleHub.publish(tunnel.serverId, `${logPrefix} [stderr] ${line}`);
+        if (tunnel.provider === "playit") {
+          const signal = parsePlayitAuthSignal(line);
+          if (signal) {
+            this.setPlayitSyncState(tunnel.id, {
+              authUrl: signal.authUrl ?? this.getPlayitSyncState(tunnel.id).authUrl,
+              authCode: signal.authCode ?? this.getPlayitSyncState(tunnel.id).authCode,
+              authObservedAt: nowIso()
+            });
+          }
+        }
       }
     });
 
@@ -336,11 +425,14 @@ export class TunnelService {
       const secret = await this.resolvePlayitSecret(tunnel, playitCommand);
       if (!secret) {
         store.updateTunnelStatus(tunnel.id, "pending");
+        const previous = this.getPlayitSyncState(tunnel.id);
         this.setPlayitSyncState(tunnel.id, {
           endpointAssigned: false,
           lastPendingReason: "playit secret is not configured yet",
           lastError: null,
-          nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id)
+          nextAttemptAt: this.resolveNextPlayitAttemptAt(tunnel.id),
+          authUrl: previous.authUrl ?? "https://playit.gg/account/agents",
+          authCode: previous.authCode ?? null
         });
         return { synced: false, pendingReason: "playit secret is not configured yet" };
       }
@@ -425,6 +517,10 @@ export class TunnelService {
       lastAttemptAt: string | null;
       lastSuccessAt: string | null;
     };
+    authRequired: boolean;
+    authUrl: string | null;
+    authCode: string | null;
+    authObservedAt: string | null;
     message: string | null;
   } | null> {
     const tunnel = typeof tunnelOrId === "string" ? store.getTunnel(tunnelOrId) : tunnelOrId;
@@ -452,6 +548,10 @@ export class TunnelService {
           lastAttemptAt: null,
           lastSuccessAt: null
         },
+        authRequired: false,
+        authUrl: null,
+        authCode: null,
+        authObservedAt: null,
         message: readiness.reason ?? null
       };
     }
@@ -480,6 +580,10 @@ export class TunnelService {
         lastAttemptAt: sync.lastAttemptAt,
         lastSuccessAt: sync.lastSuccessAt
       },
+      authRequired: !authConfigured,
+      authUrl: sync.authUrl ?? (!authConfigured ? "https://playit.gg/account/agents" : null),
+      authCode: sync.authCode,
+      authObservedAt: sync.authObservedAt,
       message
     };
   }
@@ -800,7 +904,10 @@ export class TunnelService {
         nextAttemptAt: null,
         lastPendingReason: null,
         lastError: null,
-        endpointAssigned: false
+        endpointAssigned: false,
+        authUrl: null,
+        authCode: null,
+        authObservedAt: null
       }
     );
   }
@@ -1166,4 +1273,26 @@ function parseDisplayAddress(value: string): { host: string; port: number } | nu
   }
 
   return { host, port };
+}
+
+function parsePlayitAuthSignal(line: string): { authUrl?: string; authCode?: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const urlMatch = trimmed.match(/https?:\/\/[^\s)]+/i);
+  const codeMatch = trimmed.match(/\b(?:code|pin|token)\s*[:=]\s*([A-Za-z0-9-]{4,32})\b/i);
+  const inviteCodeMatch = trimmed.match(/\b([A-Z0-9]{6,12})\b/);
+
+  const authUrl = urlMatch ? urlMatch[0] : undefined;
+  const authCode = codeMatch?.[1] ?? (!codeMatch && !authUrl && /auth|login|claim/i.test(trimmed) ? inviteCodeMatch?.[1] : undefined);
+  if (!authUrl && !authCode) {
+    return null;
+  }
+
+  return {
+    authUrl,
+    authCode
+  };
 }

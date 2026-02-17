@@ -12,7 +12,9 @@ import type {
   EditorFileSnapshotRecord,
   MigrationImportRecord,
   ModpackRollbackRecord,
+  PublicHostingDefaultProvider,
   PlayerAdminEventRecord,
+  ServerPublicHostingSettingsRecord,
   ServerPerformanceSampleRecord,
   ServerStartupEventRecord,
   ServerTickLagEventRecord,
@@ -21,6 +23,7 @@ import type {
   TaskRecord,
   TunnelRecord,
   TunnelStatusEventRecord,
+  UserLegalConsentRecord,
   UxTelemetryEventRecord,
   UserRecord,
   UserRole
@@ -170,6 +173,25 @@ type RawTunnelStatusEvent = {
   server_id: string;
   status: string;
   created_at: string;
+};
+
+type RawServerPublicHostingSettings = {
+  server_id: string;
+  auto_enable: number;
+  default_provider: PublicHostingDefaultProvider;
+  consent_version: string | null;
+  consent_accepted_at: string | null;
+  updated_at: string;
+};
+
+type RawUserLegalConsent = {
+  id: string;
+  username: string;
+  provider: string;
+  consent_version: string;
+  accepted_at: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type RawModpackRollback = {
@@ -372,6 +394,29 @@ function toTunnelStatusEvent(row: RawTunnelStatusEvent): TunnelStatusEventRecord
   };
 }
 
+function toServerPublicHostingSettings(row: RawServerPublicHostingSettings): ServerPublicHostingSettingsRecord {
+  return {
+    serverId: row.server_id,
+    autoEnable: row.auto_enable,
+    defaultProvider: row.default_provider,
+    consentVersion: row.consent_version,
+    consentAcceptedAt: row.consent_accepted_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function toUserLegalConsent(row: RawUserLegalConsent): UserLegalConsentRecord {
+  return {
+    id: row.id,
+    username: row.username,
+    provider: row.provider,
+    consentVersion: row.consent_version,
+    acceptedAt: row.accepted_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function toModpackRollback(row: RawModpackRollback): ModpackRollbackRecord {
   return {
     id: row.id,
@@ -546,6 +591,12 @@ export const store = {
       record.createdAt,
       record.updatedAt
     );
+
+    db.prepare(
+      `INSERT INTO server_public_hosting_settings (
+        server_id, auto_enable, default_provider, consent_version, consent_accepted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(record.id, 1, "playit", null, null, now);
 
     return record;
   },
@@ -832,6 +883,64 @@ export const store = {
 
   updateTunnelConfig(id: string, configJson: string): void {
     db.prepare("UPDATE tunnels SET config_json = ?, updated_at = ? WHERE id = ?").run(configJson, nowIso(), id);
+  },
+
+  getServerPublicHostingSettings(serverId: string): ServerPublicHostingSettingsRecord {
+    const row = db
+      .prepare(
+        "SELECT server_id, auto_enable, default_provider, consent_version, consent_accepted_at, updated_at FROM server_public_hosting_settings WHERE server_id = ?"
+      )
+      .get(serverId) as RawServerPublicHostingSettings | undefined;
+
+    if (!row) {
+      const now = nowIso();
+      db.prepare(
+        `INSERT INTO server_public_hosting_settings (
+          server_id, auto_enable, default_provider, consent_version, consent_accepted_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(server_id) DO UPDATE SET updated_at = excluded.updated_at`
+      ).run(serverId, 1, "playit", null, null, now);
+      return {
+        serverId,
+        autoEnable: 1,
+        defaultProvider: "playit",
+        consentVersion: null,
+        consentAcceptedAt: null,
+        updatedAt: now
+      };
+    }
+
+    return toServerPublicHostingSettings(row);
+  },
+
+  upsertServerPublicHostingSettings(input: {
+    serverId: string;
+    autoEnable?: boolean;
+    defaultProvider?: PublicHostingDefaultProvider;
+    consentVersion?: string | null;
+    consentAcceptedAt?: string | null;
+  }): ServerPublicHostingSettingsRecord {
+    const existing = this.getServerPublicHostingSettings(input.serverId);
+    const now = nowIso();
+    const autoEnable = typeof input.autoEnable === "boolean" ? (input.autoEnable ? 1 : 0) : existing.autoEnable;
+    const defaultProvider = input.defaultProvider ?? existing.defaultProvider;
+    const consentVersion = input.consentVersion === undefined ? existing.consentVersion : input.consentVersion;
+    const consentAcceptedAt =
+      input.consentAcceptedAt === undefined ? existing.consentAcceptedAt : input.consentAcceptedAt;
+
+    db.prepare(
+      `INSERT INTO server_public_hosting_settings (
+        server_id, auto_enable, default_provider, consent_version, consent_accepted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(server_id) DO UPDATE SET
+        auto_enable = excluded.auto_enable,
+        default_provider = excluded.default_provider,
+        consent_version = excluded.consent_version,
+        consent_accepted_at = excluded.consent_accepted_at,
+        updated_at = excluded.updated_at`
+    ).run(input.serverId, autoEnable, defaultProvider, consentVersion ?? null, consentAcceptedAt ?? null, now);
+
+    return this.getServerPublicHostingSettings(input.serverId);
   },
 
   listServerPackages(serverId: string): ServerPackageRecord[] {
@@ -1520,6 +1629,53 @@ export const store = {
       .prepare("SELECT * FROM player_admin_events WHERE server_id = ? ORDER BY created_at DESC LIMIT ?")
       .all(serverId, safeLimit) as RawPlayerAdminEvent[];
     return rows.map(toPlayerAdminEvent);
+  },
+
+  upsertUserLegalConsent(input: {
+    username: string;
+    provider: string;
+    consentVersion: string;
+    acceptedAt?: string;
+  }): UserLegalConsentRecord {
+    const now = nowIso();
+    const acceptedAt = input.acceptedAt ?? now;
+    const existing = db
+      .prepare("SELECT * FROM user_legal_consents WHERE username = ? AND provider = ? AND consent_version = ?")
+      .get(input.username, input.provider, input.consentVersion) as RawUserLegalConsent | undefined;
+
+    if (existing) {
+      db.prepare("UPDATE user_legal_consents SET accepted_at = ?, updated_at = ? WHERE id = ?").run(acceptedAt, now, existing.id);
+      const updated = db.prepare("SELECT * FROM user_legal_consents WHERE id = ?").get(existing.id) as RawUserLegalConsent | undefined;
+      if (!updated) {
+        throw new Error("Failed to reload legal consent");
+      }
+      return toUserLegalConsent(updated);
+    }
+
+    const record: UserLegalConsentRecord = {
+      id: uid("consent"),
+      username: input.username,
+      provider: input.provider,
+      consentVersion: input.consentVersion,
+      acceptedAt,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    db.prepare(
+      `INSERT INTO user_legal_consents (
+        id, username, provider, consent_version, accepted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(record.id, record.username, record.provider, record.consentVersion, record.acceptedAt, record.createdAt, record.updatedAt);
+
+    return record;
+  },
+
+  getLatestUserLegalConsent(username: string, provider: string): UserLegalConsentRecord | undefined {
+    const row = db
+      .prepare("SELECT * FROM user_legal_consents WHERE username = ? AND provider = ? ORDER BY accepted_at DESC LIMIT 1")
+      .get(username, provider) as RawUserLegalConsent | undefined;
+    return row ? toUserLegalConsent(row) : undefined;
   },
 
   createMigrationImport(input: {

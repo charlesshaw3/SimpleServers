@@ -3,7 +3,7 @@
 SimpleServers ships desktop artifacts via Electron Builder and GitHub Actions.
 
 Canonical repository: `https://github.com/dueldev/SimpleServers`
-Current stable tag: `v0.5.4`
+Current stable tag: `v0.5.5`
 
 ## Workflows
 
@@ -100,6 +100,11 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.5.5`
+  - Defaulted public hosting to Playit for new servers with persisted per-server provider settings and lifecycle auto-connect behavior.
+  - Added consent-aware Playit legal notice flow (setup review + workspace networking settings) with stored consent version/timestamp.
+  - Added unified player modal mutation endpoint (`POST /servers/:id/player-admin/action`) and profile-aware player-admin state.
+  - Expanded v2 UX spacing/elevation rhythm and kept legacy shell as optional fallback.
 - `v0.5.4`
   - Added v2 shell architecture with focused contexts: `Servers`, `Setup Wizard`, `Server Workspace`.
   - Added setup session endpoints (`POST /setup/sessions`, `POST /setup/sessions/:id/launch`) for deterministic wizard launch flow.

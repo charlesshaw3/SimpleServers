@@ -95,6 +95,7 @@ Error responses include:
 - port `25565`
 - `startServer=true`
 - `publicHosting=true`
+- `publicHosting` provider defaults to `playit` unless overridden in server hosting settings
 
 Optional quickstart inputs:
 
@@ -136,6 +137,7 @@ Legacy file-specific routes are still supported:
 ## Player Administration
 
 - `GET /servers/:id/player-admin?limit=<1-400>`
+- `POST /servers/:id/player-admin/action` (`moderator`; action: `op | deop | whitelist | unwhitelist | ban | unban`)
 - `POST /servers/:id/players/op` (`moderator`)
 - `POST /servers/:id/players/op/remove` (`moderator`)
 - `POST /servers/:id/players/whitelist` (`moderator`)
@@ -145,12 +147,28 @@ Legacy file-specific routes are still supported:
 - `POST /servers/:id/players/ban-ip` (`moderator`)
 - `POST /servers/:id/players/unban-ip` (`moderator`)
 
+`GET /servers/:id/player-admin` includes:
+
+- `profiles[]` with `isOp`, `isWhitelisted`, `isBanned`, `lastSeenAt`, `lastActionAt`
+- backward-compatible lists (`ops`, `whitelist`, `bannedPlayers`, `bannedIps`, `history`, `knownPlayers`)
+
 ## Quick Public Hosting
 
 - `POST /servers/:id/public-hosting/quick-enable` (`admin`)
 - `GET /servers/:id/public-hosting/status`
+- `GET /servers/:id/public-hosting/settings`
+- `PUT /servers/:id/public-hosting/settings` (`admin`)
 - `GET /servers/:id/public-hosting/diagnostics`
 - `POST /tunnels/:id/playit/secret` (`admin`)
+
+Behavior notes:
+
+- New servers default to `autoEnable=true` and `defaultProvider=playit`.
+- Start/restart/go-live flows auto-ensure preferred provider tunnel when auto-enable is set.
+- Playit quick-host enable requires consent for current consent version.
+- Diagnostics payload includes auth handoff hints for Playit:
+  - `authRequired`, `authUrl`, `authCode`, `authObservedAt`
+- Diagnostics also include `legal` links for Playit terms/privacy and consent version.
 
 ## Tasks
 

@@ -1,4 +1,4 @@
-# UX Research Notes (v0.5.4)
+# UX Research Notes (v0.5.5)
 
 This document captures external product research and internal audits that informed the v2 shell rollout.
 
@@ -44,39 +44,44 @@ Key takeaways:
 - WCAG 2.2 quick reference: https://www.w3.org/WAI/WCAG22/quickref/
 - PatternFly bulk-selection pattern: https://www.patternfly.org/patterns/bulk-selection/
 
-## Internal Findings Before v0.5.4
+## Internal Findings Before v0.5.5
 
-- Main app flow had too many competing modes and duplicated action regions.
-- Setup path branching was over-exposed too early for first-run users.
-- Operational data was split across multiple API calls, increasing UI complexity.
+- v2 spacing and grouping still felt compressed in high-density screens.
+- Player admin actions were split between forms and non-interactive cached-player rows.
+- Public hosting legal consent and provider defaults were not explicit enough in first-run flow.
 
-## v0.5.4 Changes Mapped to Findings
+## v0.5.5 Changes Mapped to Findings
 
-### Information architecture
+### Public hosting defaults and legal clarity
 
-- Implemented explicit three-context flow:
-  - `Servers`
-  - `Setup Wizard`
-  - `Server Workspace`
-- Preserved legacy view as fallback while defaulting to v2 shell.
+- Added per-server hosting settings with Playit as default provider for new servers.
+- Added consent-aware legal notice in setup review and workspace networking settings.
+- Added diagnostics auth handoff surfaces (`authRequired`, `authUrl`, `authCode`) with explicit recovery actions.
 
-### Wizard flow reliability
+### Player admin interaction parity
 
-- Added setup session lifecycle:
-  - `POST /setup/sessions`
-  - `POST /setup/sessions/:id/launch`
-- Added launch progress + completion handoff with invite address and dashboard continuation.
+- Added clickable cached players in v2 Players tab and workspace right rail.
+- Added profile modal with direct actions:
+  - `Op`
+  - `Deop`
+  - `Whitelist`
+  - `Un-whitelist`
+  - `Ban`
+  - `Unban`
+- Added unified mutation endpoint:
+  - `POST /servers/:id/player-admin/action`
 
-### Workspace composition stability
+### Visual density and spacing quality
 
-- Added `GET /servers/:id/workspace-summary` to aggregate status, metrics, tunnel state, and primary action model.
-- Reduced v2 dashboard reliance on fragmented endpoint composition.
+- Introduced expanded spacing tokens and applied them across v2 shell/workspace/wizard surfaces.
+- Increased panel padding, vertical rhythm, and list row spacing to reduce scanning fatigue.
+- Preserved legacy shell unchanged as fallback while making v2 the complete primary surface.
 
 ## Validation
 
 The following were run after implementation:
 
 - `npm run typecheck`
-- `npm run build -w apps/api`
-- `npm run build -w apps/web`
-- `npm run test -w apps/api`
+- `npm run build`
+- `npm run test:api`
+- `npm run test:e2e`

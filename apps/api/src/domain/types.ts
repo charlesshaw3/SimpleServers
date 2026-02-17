@@ -7,6 +7,7 @@ export type UserRole = "owner" | "admin" | "moderator" | "viewer";
 export type AlertSeverity = "info" | "warning" | "critical";
 
 export type TunnelProvider = "manual" | "playit" | "cloudflared" | "ngrok";
+export type PublicHostingDefaultProvider = "playit" | "cloudflared" | "ngrok" | "manual";
 
 export type TunnelProtocol = "tcp" | "udp";
 
@@ -224,6 +225,25 @@ export type TunnelStatusEventRecord = {
   serverId: string;
   status: string;
   createdAt: string;
+};
+
+export type ServerPublicHostingSettingsRecord = {
+  serverId: string;
+  autoEnable: number;
+  defaultProvider: PublicHostingDefaultProvider;
+  consentVersion: string | null;
+  consentAcceptedAt: string | null;
+  updatedAt: string;
+};
+
+export type UserLegalConsentRecord = {
+  id: string;
+  username: string;
+  provider: string;
+  consentVersion: string;
+  acceptedAt: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ModpackRollbackRecord = {

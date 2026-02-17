@@ -103,6 +103,29 @@ export function migrate(): void {
       FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS server_public_hosting_settings (
+      server_id TEXT PRIMARY KEY,
+      auto_enable INTEGER NOT NULL DEFAULT 1,
+      default_provider TEXT NOT NULL DEFAULT 'playit',
+      consent_version TEXT,
+      consent_accepted_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_legal_consents (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      consent_version TEXT NOT NULL,
+      accepted_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_legal_consents_unique
+      ON user_legal_consents(username, provider, consent_version);
+
     CREATE TABLE IF NOT EXISTS server_packages (
       id TEXT PRIMARY KEY,
       server_id TEXT NOT NULL,

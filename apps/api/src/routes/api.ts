@@ -50,7 +50,8 @@ const ignoredDirectoryNames = new Set(["node_modules", "libraries", ".git", "cac
 const maxEditableFileBytes = 1024 * 1024; // 1 MB safety guard for in-app editing.
 const maxEditorFiles = 350;
 const maxEditorDepth = 5;
-const APP_VERSION = "0.5.4";
+const APP_VERSION = "0.5.5";
+const PLAYIT_CONSENT_VERSION = "playit-terms-v1";
 const REPOSITORY_URL = "https://github.com/dueldev/SimpleServers";
 const SETUP_SESSION_TTL_MS = 15 * 60 * 1000;
 const WORKSPACE_SUMMARY_WINDOW_HOURS = 6;
@@ -117,7 +118,15 @@ const createTunnelSchema = z.object({
 
 const quickPublicHostingSchema = z.object({
   localPort: z.number().int().min(1).max(65535).optional(),
-  protocol: z.enum(["tcp", "udp"]).optional()
+  protocol: z.enum(["tcp", "udp"]).optional(),
+  provider: z.enum(["playit", "cloudflared", "ngrok", "manual"]).optional()
+});
+
+const publicHostingSettingsUpdateSchema = z.object({
+  autoEnable: z.boolean().optional(),
+  defaultProvider: z.enum(["playit", "cloudflared", "ngrok", "manual"]).optional(),
+  consentAccepted: z.boolean().optional(),
+  consentVersion: z.string().trim().min(3).max(128).optional()
 });
 
 const playitSecretSchema = z.object({
@@ -264,6 +273,13 @@ const unbanIpSchema = z.object({
 
 const playerHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(400).default(150)
+});
+
+const playerAdminActionSchema = z.object({
+  action: z.enum(["op", "deop", "whitelist", "unwhitelist", "ban", "unban"]),
+  name: z.string().trim().min(2).max(32),
+  uuid: z.string().trim().min(2).max(128).optional(),
+  reason: z.string().trim().min(1).max(200).optional()
 });
 
 const modpackPlanSchema = z.object({
@@ -1082,6 +1098,8 @@ export async function registerApiRoutes(
       throw app.httpErrors.notFound("Server not found");
     }
 
+    const hostingSettings = store.getServerPublicHostingSettings(server.id);
+
     const existingTunnels = deps.tunnels.listTunnels(serverId);
     await Promise.all(
       existingTunnels
@@ -1094,9 +1112,15 @@ export async function registerApiRoutes(
     );
 
     const tunnels = deps.tunnels.listTunnels(serverId);
-    const activeTunnel = tunnels.find((tunnel) => tunnel.status === "active") ?? tunnels[0] ?? null;
+    const preferredTunnel = tunnels.find((tunnel) => tunnel.provider === hostingSettings.defaultProvider) ?? null;
+    const activeTunnel =
+      tunnels.find((tunnel) => tunnel.status === "active" && tunnel.provider === hostingSettings.defaultProvider) ??
+      preferredTunnel ??
+      tunnels.find((tunnel) => tunnel.status === "active") ??
+      tunnels[0] ??
+      null;
     const readiness = activeTunnel ? deps.tunnels.getTunnelLaunchReadiness(activeTunnel) : null;
-    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
+    const hasResolvedPublicAddress = isTunnelEndpointResolved(activeTunnel);
     const publicAddress =
       activeTunnel && hasResolvedPublicAddress ? `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}` : null;
     const diagnostics = activeTunnel ? await deps.tunnels.getTunnelDiagnostics(activeTunnel) : null;
@@ -1105,8 +1129,18 @@ export async function registerApiRoutes(
       ? readiness?.ok && hasResolvedPublicAddress
         ? ["Share the public address with players.", "Keep this app running while hosting."]
         : [
-            hasResolvedPublicAddress ? readiness?.reason ?? "Tunnel dependency missing." : "Playit is still assigning a public endpoint.",
+            hasResolvedPublicAddress
+              ? readiness?.reason ?? "Tunnel dependency missing."
+              : activeTunnel.provider === "playit"
+                ? "Playit is still assigning a public endpoint."
+                : `${activeTunnel.provider} endpoint is still resolving.`,
             "Start your server to let SimpleServers provision tunnel dependencies automatically, or install the client manually."
+          ]
+      : hostingSettings.defaultProvider === "playit" && hostingSettings.consentVersion !== PLAYIT_CONSENT_VERSION
+        ? [
+            "Accept Playit terms to enable public hosting on this server.",
+            "Enable quick hosting and start your server.",
+            "Share the public address once it is active."
           ]
       : [
           "Enable quick hosting to avoid manual port forwarding.",
@@ -1116,6 +1150,7 @@ export async function registerApiRoutes(
 
     return {
       server,
+      hostingSettings,
       activeTunnel,
       readiness,
       hasResolvedPublicAddress,
@@ -1147,11 +1182,87 @@ export async function registerApiRoutes(
     };
   };
 
+  const isTunnelEndpointResolved = (tunnel: ReturnType<TunnelService["listTunnels"]>[number] | null): boolean => {
+    if (!tunnel) {
+      return false;
+    }
+    return !tunnel.publicHost.startsWith("pending.");
+  };
+
+  const resolvePublicHostingSettings = (serverId: string) => {
+    const settings = store.getServerPublicHostingSettings(serverId);
+    return {
+      ...settings,
+      autoEnable: Boolean(settings.autoEnable),
+      consentRequired: settings.defaultProvider === "playit" && settings.consentVersion !== PLAYIT_CONSENT_VERSION,
+      consentCurrentVersion: PLAYIT_CONSENT_VERSION
+    };
+  };
+
+  const hasPlayitConsent = (serverId: string, username: string): boolean => {
+    const serverSettings = store.getServerPublicHostingSettings(serverId);
+    if (serverSettings.consentVersion === PLAYIT_CONSENT_VERSION && serverSettings.consentAcceptedAt) {
+      return true;
+    }
+
+    const latestConsent = store.getLatestUserLegalConsent(username, "playit");
+    if (!latestConsent) {
+      return false;
+    }
+    return latestConsent.consentVersion === PLAYIT_CONSENT_VERSION;
+  };
+
+  const acceptPlayitConsent = (serverId: string, username: string, acceptedAt = new Date().toISOString()) => {
+    store.upsertUserLegalConsent({
+      username,
+      provider: "playit",
+      consentVersion: PLAYIT_CONSENT_VERSION,
+      acceptedAt
+    });
+    store.upsertServerPublicHostingSettings({
+      serverId,
+      consentVersion: PLAYIT_CONSENT_VERSION,
+      consentAcceptedAt: acceptedAt
+    });
+  };
+
+  const ensurePreferredTunnelForServer = (
+    server: NonNullable<ReturnType<typeof store.getServerById>>,
+    actorUsername?: string
+  ): { tunnel: ReturnType<TunnelService["listTunnels"]>[number] | null; warning: string | null } => {
+    const settings = store.getServerPublicHostingSettings(server.id);
+    if (!settings.autoEnable) {
+      return {
+        tunnel: null,
+        warning: null
+      };
+    }
+
+    const provider = settings.defaultProvider;
+    if (provider === "playit") {
+      const username = actorUsername?.trim();
+      if (!username || !hasPlayitConsent(server.id, username)) {
+        return {
+          tunnel: null,
+          warning:
+            "Public hosting uses Playit.gg. Accept Playit terms in Settings before enabling public hosting for this server."
+        };
+      }
+    }
+
+    const tunnel = deps.tunnels.ensurePreferredQuickTunnel(server.id, provider);
+    return {
+      tunnel,
+      warning: null
+    };
+  };
+
   const createAndProvisionServer = async (
     payload: z.infer<typeof createServerSchema>,
     options?: {
       requestedSavePath?: string;
       worldImportPath?: string;
+      actorUsername?: string;
     }
   ) => {
     if (payload.maxMemoryMb < payload.minMemoryMb) {
@@ -1242,11 +1353,23 @@ export async function registerApiRoutes(
       throw app.httpErrors.internalServerError("Server was created but could not be reloaded from store");
     }
 
+    if (options?.actorUsername) {
+      const latestConsent = store.getLatestUserLegalConsent(options.actorUsername, "playit");
+      if (latestConsent?.consentVersion === PLAYIT_CONSENT_VERSION) {
+        store.upsertServerPublicHostingSettings({
+          serverId: server.id,
+          consentVersion: latestConsent.consentVersion,
+          consentAcceptedAt: latestConsent.acceptedAt
+        });
+      }
+    }
+
     return { server, policyFindings };
   };
 
   const goLiveForServer = async (
-    server: NonNullable<ReturnType<typeof store.getServerById>>
+    server: NonNullable<ReturnType<typeof store.getServerById>>,
+    actorUsername: string
   ): Promise<{
     ok: boolean;
     blocked: boolean;
@@ -1304,24 +1427,45 @@ export async function registerApiRoutes(
       }
     }
 
-    const tunnel = deps.tunnels.ensureQuickTunnel(server.id);
+    const preferredTunnel = ensurePreferredTunnelForServer(server, actorUsername);
+    if (!preferredTunnel.tunnel) {
+      return {
+        ok: true,
+        blocked: false,
+        preflight,
+        warning: preferredTunnel.warning,
+        publicHosting: {
+          quickHostReady: false,
+          publicAddress: null,
+          tunnel: null,
+          steps: [
+            preferredTunnel.warning ?? "Public hosting is disabled for this server.",
+            "Open Settings to configure hosting provider and consent."
+          ]
+        }
+      };
+    }
+
+    const tunnel = preferredTunnel.tunnel;
     try {
       await deps.tunnels.startTunnel(tunnel.id);
-      const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
-      if (syncResult.pendingReason) {
-        warning = syncResult.pendingReason;
+      if (tunnel.provider === "playit") {
+        const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+        if (syncResult.pendingReason) {
+          warning = syncResult.pendingReason;
+        }
       }
     } catch (error) {
       warning = error instanceof Error ? error.message : String(error);
     }
 
     const tunnels = deps.tunnels.listTunnels(server.id);
-    const activeTunnel = tunnels.find((entry) => entry.provider === "playit") ?? tunnels[0] ?? null;
-    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
+    const activeTunnel = tunnels.find((entry) => entry.id === tunnel.id) ?? tunnels[0] ?? null;
+    const hasResolvedPublicAddress = isTunnelEndpointResolved(activeTunnel);
     const quickHostReady = Boolean(activeTunnel && hasResolvedPublicAddress);
     const publicAddress = hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null;
     if (!publicAddress && !warning) {
-      warning = "Playit is still assigning a public endpoint.";
+      warning = activeTunnel?.provider === "playit" ? "Playit is still assigning a public endpoint." : "Public endpoint is still resolving.";
     }
 
     return {
@@ -1336,7 +1480,7 @@ export async function registerApiRoutes(
         steps: quickHostReady
           ? ["Share the public address with players.", "Keep this app running while hosting."]
           : [
-              "Playit is still assigning a public endpoint.",
+              activeTunnel?.provider === "playit" ? "Playit is still assigning a public endpoint." : "Public endpoint is still resolving.",
               "Keep this machine online until the endpoint resolves."
             ]
       }
@@ -1597,7 +1741,14 @@ export async function registerApiRoutes(
 
     const { server, policyFindings } = await createAndProvisionServer(createPayload, {
       requestedSavePath: payload.savePath,
-      worldImportPath: payload.worldImportPath
+      worldImportPath: payload.worldImportPath,
+      actorUsername
+    });
+
+    store.upsertServerPublicHostingSettings({
+      serverId: server.id,
+      autoEnable: payload.publicHosting,
+      defaultProvider: "playit"
     });
 
     let blocked = false;
@@ -1629,31 +1780,38 @@ export async function registerApiRoutes(
     let quickHostingWarning: string | null = null;
     let quickHostAddress: string | null = null;
     if (payload.publicHosting) {
-      const tunnel = deps.tunnels.ensureQuickTunnel(server.id);
-      const readiness = deps.tunnels.getTunnelLaunchReadiness(tunnel);
-      quickHostingWarning = readiness.ok ? null : readiness.reason ?? "Tunnel dependency missing";
+      const preferredTunnel = ensurePreferredTunnelForServer(server, actorUsername);
+      if (!preferredTunnel.tunnel) {
+        quickHostingWarning = preferredTunnel.warning ?? "Public hosting is disabled for this server.";
+      } else {
+        const tunnel = preferredTunnel.tunnel;
+        const readiness = deps.tunnels.getTunnelLaunchReadiness(tunnel);
+        quickHostingWarning = readiness.ok ? null : readiness.reason ?? "Tunnel dependency missing";
 
-      if (started) {
-        try {
-          await deps.tunnels.startTunnel(tunnel.id);
-          const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
-          if (syncResult.pendingReason) {
-            quickHostingWarning = quickHostingWarning ? `${quickHostingWarning}; ${syncResult.pendingReason}` : syncResult.pendingReason;
+        if (started) {
+          try {
+            await deps.tunnels.startTunnel(tunnel.id);
+            if (tunnel.provider === "playit") {
+              const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+              if (syncResult.pendingReason) {
+                quickHostingWarning = quickHostingWarning ? `${quickHostingWarning}; ${syncResult.pendingReason}` : syncResult.pendingReason;
+              }
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            quickHostingWarning = message;
           }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          quickHostingWarning = message;
         }
-      }
 
-      const activeTunnel = deps.tunnels
-        .listTunnels(server.id)
-        .find((entry) => entry.provider === "playit" || entry.status === "active");
-      if (activeTunnel) {
-        const hasResolvedPublicAddress = activeTunnel.publicHost !== "pending.playit.gg";
-        quickHostAddress = hasResolvedPublicAddress ? `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}` : null;
-        if (!hasResolvedPublicAddress && !quickHostingWarning) {
-          quickHostingWarning = "Playit is still assigning a public endpoint.";
+        const activeTunnel = deps.tunnels
+          .listTunnels(server.id)
+          .find((entry) => entry.id === tunnel.id || entry.status === "active");
+        if (activeTunnel) {
+          const hasResolvedPublicAddress = isTunnelEndpointResolved(activeTunnel);
+          quickHostAddress = hasResolvedPublicAddress ? `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}` : null;
+          if (!hasResolvedPublicAddress && !quickHostingWarning && activeTunnel.provider === "playit") {
+            quickHostingWarning = "Playit is still assigning a public endpoint.";
+          }
         }
       }
     }
@@ -1703,9 +1861,18 @@ export async function registerApiRoutes(
 
   app.post("/servers", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
     const payload = applyPreset(createServerSchema.parse(request.body));
-    const { server, policyFindings } = await createAndProvisionServer(payload);
+    const { server, policyFindings } = await createAndProvisionServer(payload, {
+      actorUsername: request.user!.username
+    });
+    const preferredTunnel = ensurePreferredTunnelForServer(server, request.user!.username);
+    if (preferredTunnel.tunnel) {
+      writeAudit(request.user!.username, "public_hosting.auto_prepare", "server", server.id, {
+        tunnelId: preferredTunnel.tunnel.id,
+        provider: preferredTunnel.tunnel.provider
+      });
+    }
     writeAudit(request.user!.username, "server.create", "server", server.id, payload);
-    return { server, policyFindings };
+    return { server, policyFindings, publicHostingWarning: preferredTunnel.warning };
   });
 
   app.post("/servers/quickstart", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
@@ -1761,11 +1928,17 @@ export async function registerApiRoutes(
 
         try {
           await deps.runtime.start(server);
-          await deps.tunnels.startTunnelsForServer(server.id);
+          const preferredTunnel = ensurePreferredTunnelForServer(server, request.user!.username);
+          if (preferredTunnel.tunnel) {
+            await deps.tunnels.startTunnel(preferredTunnel.tunnel.id);
+            if (preferredTunnel.tunnel.provider === "playit") {
+              await deps.tunnels.refreshPlayitTunnelPublicEndpoint(preferredTunnel.tunnel.id);
+            }
+          }
           results.push({
             serverId: server.id,
             ok: true,
-            message: "Started"
+            message: preferredTunnel.warning ? `Started (hosting warning: ${preferredTunnel.warning})` : "Started"
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1803,11 +1976,17 @@ export async function registerApiRoutes(
         try {
           await deps.tunnels.stopTunnelsForServer(server.id);
           await deps.runtime.restart(server);
-          await deps.tunnels.startTunnelsForServer(server.id);
+          const preferredTunnel = ensurePreferredTunnelForServer(server, request.user!.username);
+          if (preferredTunnel.tunnel) {
+            await deps.tunnels.startTunnel(preferredTunnel.tunnel.id);
+            if (preferredTunnel.tunnel.provider === "playit") {
+              await deps.tunnels.refreshPlayitTunnelPublicEndpoint(preferredTunnel.tunnel.id);
+            }
+          }
           results.push({
             serverId: server.id,
             ok: true,
-            message: "Restarted"
+            message: preferredTunnel.warning ? `Restarted (hosting warning: ${preferredTunnel.warning})` : "Restarted"
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1840,7 +2019,7 @@ export async function registerApiRoutes(
       }
 
       if (payload.action === "goLive") {
-        const outcome = await goLiveForServer(server);
+        const outcome = await goLiveForServer(server, request.user!.username);
         results.push({
           serverId: server.id,
           ok: outcome.ok,
@@ -1962,9 +2141,17 @@ export async function registerApiRoutes(
       deps.alerts.createAlert(server.id, "warning", "preflight_warning", issue.message);
     }
 
+    let hostingWarning: string | null = null;
     try {
       await deps.runtime.start(server);
-      await deps.tunnels.startTunnelsForServer(server.id);
+      const preferredTunnel = ensurePreferredTunnelForServer(server, request.user!.username);
+      hostingWarning = preferredTunnel.warning;
+      if (preferredTunnel.tunnel) {
+        await deps.tunnels.startTunnel(preferredTunnel.tunnel.id);
+        if (preferredTunnel.tunnel.provider === "playit") {
+          await deps.tunnels.refreshPlayitTunnelPublicEndpoint(preferredTunnel.tunnel.id);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       deps.alerts.createAlert(server.id, "critical", "start_failed", message);
@@ -1978,7 +2165,7 @@ export async function registerApiRoutes(
     }
 
     writeAudit(request.user!.username, "server.start", "server", id);
-    return { ok: true, preflight };
+    return { ok: true, preflight, warning: hostingWarning };
   });
 
   app.post("/servers/:id/stop", { preHandler: [authenticate, requireRole("moderator")] }, async (request) => {
@@ -2003,9 +2190,16 @@ export async function registerApiRoutes(
 
     await deps.tunnels.stopTunnelsForServer(server.id);
     await deps.runtime.restart(server);
-    await deps.tunnels.startTunnelsForServer(server.id);
+    const preferredTunnel = ensurePreferredTunnelForServer(server, request.user!.username);
+    const hostingWarning = preferredTunnel.warning;
+    if (preferredTunnel.tunnel) {
+      await deps.tunnels.startTunnel(preferredTunnel.tunnel.id);
+      if (preferredTunnel.tunnel.provider === "playit") {
+        await deps.tunnels.refreshPlayitTunnelPublicEndpoint(preferredTunnel.tunnel.id);
+      }
+    }
     writeAudit(request.user!.username, "server.restart", "server", id);
-    return { ok: true };
+    return { ok: true, warning: hostingWarning };
   });
 
   app.post("/servers/:id/safe-restart", { preHandler: [authenticate, requireRole("admin")] }, async (request, reply) => {
@@ -2053,7 +2247,13 @@ export async function registerApiRoutes(
 
     try {
       await deps.runtime.start(refreshedServer);
-      await deps.tunnels.startTunnelsForServer(refreshedServer.id);
+      const preferredTunnel = ensurePreferredTunnelForServer(refreshedServer, request.user!.username);
+      if (preferredTunnel.tunnel) {
+        await deps.tunnels.startTunnel(preferredTunnel.tunnel.id);
+        if (preferredTunnel.tunnel.provider === "playit") {
+          await deps.tunnels.refreshPlayitTunnelPublicEndpoint(preferredTunnel.tunnel.id);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       deps.alerts.createAlert(refreshedServer.id, "critical", "safe_restart_failed", message);
@@ -2174,7 +2374,13 @@ export async function registerApiRoutes(
 
     try {
       await deps.runtime.start(refreshedServer);
-      await deps.tunnels.startTunnelsForServer(refreshedServer.id);
+      const preferredTunnel = ensurePreferredTunnelForServer(refreshedServer, request.user!.username);
+      if (preferredTunnel.tunnel) {
+        await deps.tunnels.startTunnel(preferredTunnel.tunnel.id);
+        if (preferredTunnel.tunnel.provider === "playit") {
+          await deps.tunnels.refreshPlayitTunnelPublicEndpoint(preferredTunnel.tunnel.id);
+        }
+      }
       completed.push("restarted server safely");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2222,7 +2428,7 @@ export async function registerApiRoutes(
       throw app.httpErrors.notFound("Server not found");
     }
 
-    const outcome = await goLiveForServer(server);
+    const outcome = await goLiveForServer(server, request.user!.username);
     if (!outcome.ok && !outcome.blocked && outcome.warning?.startsWith("Failed to start server:")) {
       const errorMessage = outcome.warning;
       return reply.code(500).send({
@@ -2267,6 +2473,20 @@ export async function registerApiRoutes(
     return {
       state: deps.playerAdmin.getState(id, query.limit)
     };
+  });
+
+  app.post("/servers/:id/player-admin/action", { preHandler: [authenticate, requireRole("moderator")] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const payload = playerAdminActionSchema.parse(request.body ?? {});
+    const state = deps.playerAdmin.applyAction({
+      serverId: id,
+      action: payload.action,
+      name: payload.name,
+      uuid: payload.uuid,
+      reason: payload.reason
+    });
+    writeAudit(request.user!.username, `players.action.${payload.action}`, "server", id, payload);
+    return { state };
   });
 
   app.post("/servers/:id/players/op", { preHandler: [authenticate, requireRole("moderator")] }, async (request) => {
@@ -2899,15 +3119,33 @@ export async function registerApiRoutes(
       throw app.httpErrors.notFound("Server not found");
     }
 
-    const tunnel = deps.tunnels.ensureQuickTunnel(id, payload);
+    const existingSettings = store.getServerPublicHostingSettings(id);
+    const provider = payload.provider ?? existingSettings.defaultProvider;
+    store.upsertServerPublicHostingSettings({
+      serverId: id,
+      autoEnable: true,
+      defaultProvider: provider
+    });
+
+    if (provider === "playit" && !hasPlayitConsent(id, request.user!.username)) {
+      return {
+        tunnel: null,
+        warning: "Playit consent is required before enabling public hosting.",
+        settings: resolvePublicHostingSettings(id)
+      };
+    }
+
+    const tunnel = deps.tunnels.ensurePreferredQuickTunnel(id, provider, payload);
     const readiness = deps.tunnels.getTunnelLaunchReadiness(tunnel);
     let warning: string | null = readiness.ok ? null : readiness.reason ?? "Tunnel dependency missing.";
     if (server.status === "running" || server.status === "starting") {
       try {
         await deps.tunnels.startTunnel(tunnel.id);
-        const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
-        if (syncResult.pendingReason) {
-          warning = warning ? `${warning}; ${syncResult.pendingReason}` : syncResult.pendingReason;
+        if (tunnel.provider === "playit") {
+          const syncResult = await deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id);
+          if (syncResult.pendingReason) {
+            warning = warning ? `${warning}; ${syncResult.pendingReason}` : syncResult.pendingReason;
+          }
         }
       } catch (error) {
         warning = error instanceof Error ? error.message : String(error);
@@ -2922,7 +3160,57 @@ export async function registerApiRoutes(
     });
     return {
       tunnel,
-      warning
+      warning,
+      settings: resolvePublicHostingSettings(id)
+    };
+  });
+
+  app.get("/servers/:id/public-hosting/settings", { preHandler: [authenticate] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    return {
+      settings: resolvePublicHostingSettings(id)
+    };
+  });
+
+  app.put("/servers/:id/public-hosting/settings", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const server = store.getServerById(id);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const payload = publicHostingSettingsUpdateSchema.parse(request.body ?? {});
+    const consentVersion = payload.consentVersion ?? PLAYIT_CONSENT_VERSION;
+    if (payload.consentAccepted) {
+      acceptPlayitConsent(id, request.user!.username, new Date().toISOString());
+    }
+
+    const updated = store.upsertServerPublicHostingSettings({
+      serverId: id,
+      autoEnable: payload.autoEnable,
+      defaultProvider: payload.defaultProvider,
+      consentVersion: payload.consentAccepted ? consentVersion : undefined,
+      consentAcceptedAt: payload.consentAccepted ? new Date().toISOString() : undefined
+    });
+
+    writeAudit(request.user!.username, "public_hosting.settings.update", "server", id, {
+      autoEnable: payload.autoEnable,
+      defaultProvider: payload.defaultProvider,
+      consentAccepted: payload.consentAccepted ?? false,
+      consentVersion
+    });
+
+    return {
+      settings: {
+        ...updated,
+        autoEnable: Boolean(updated.autoEnable),
+        consentCurrentVersion: PLAYIT_CONSENT_VERSION
+      }
     };
   });
 
@@ -2934,7 +3222,8 @@ export async function registerApiRoutes(
     }
 
     const tunnels = deps.tunnels.listTunnels(id);
-    const tunnel = tunnels.find((entry) => entry.provider === "playit") ?? tunnels[0] ?? null;
+    const settings = store.getServerPublicHostingSettings(id);
+    const tunnel = tunnels.find((entry) => entry.provider === settings.defaultProvider) ?? tunnels[0] ?? null;
     if (!tunnel) {
       return {
         diagnostics: null,
@@ -2945,7 +3234,13 @@ export async function registerApiRoutes(
             label: "Enable Quick Hosting",
             description: "Create the managed Playit tunnel for this server."
           }
-        ]
+        ],
+        settings: resolvePublicHostingSettings(id),
+        legal: {
+          playitTermsUrl: "https://playit.gg/terms-of-service",
+          playitPrivacyUrl: "https://playit.gg/privacy-policy",
+          consentVersion: PLAYIT_CONSENT_VERSION
+        }
       };
     }
 
@@ -2959,8 +3254,8 @@ export async function registerApiRoutes(
       if (!diagnostics.commandAvailable) {
         actions.push("Install or allow SimpleServers to manage the playit binary.");
       }
-      if (diagnostics.authConfigured === false) {
-        actions.push("Paste your Playit secret from the Playit dashboard, or launch playit once and complete agent auth.");
+      if (diagnostics.authRequired) {
+        actions.push("Open Playit authorization and complete agent linking.");
       }
       if (!diagnostics.endpointAssigned) {
         actions.push("Keep the app running while playit assigns a public endpoint.");
@@ -2996,14 +3291,19 @@ export async function registerApiRoutes(
     }
     if (diagnostics?.provider === "playit" && diagnostics.authConfigured === false) {
       fixes.push({
+        id: "open_playit_auth",
+        label: "Open Playit Authorization",
+        description: "Open Playit account authorization and link the agent."
+      });
+      fixes.push({
         id: "set_playit_secret",
-        label: "Set Playit Secret",
-        description: "Paste your Playit agent secret once so endpoint sync can authenticate."
+        label: "Set Playit Secret (Fallback)",
+        description: "Use secret entry only if automatic authorization cannot be completed."
       });
       fixes.push({
         id: "copy_playit_auth_steps",
-        label: "Copy Auth Steps",
-        description: "Copy the exact steps needed to authenticate the Playit agent."
+        label: "Copy Auth Steps (Fallback)",
+        description: "Copy fallback manual auth instructions."
       });
     }
     if (diagnostics && !diagnostics.endpointAssigned) {
@@ -3022,7 +3322,13 @@ export async function registerApiRoutes(
     return {
       diagnostics,
       actions,
-      fixes
+      fixes,
+      settings: resolvePublicHostingSettings(id),
+      legal: {
+        playitTermsUrl: "https://playit.gg/terms-of-service",
+        playitPrivacyUrl: "https://playit.gg/privacy-policy",
+        consentVersion: PLAYIT_CONSENT_VERSION
+      }
     };
   });
 
@@ -3040,6 +3346,13 @@ export async function registerApiRoutes(
       quickHostReady: Boolean(snapshot.activeTunnel && snapshot.readiness?.ok && snapshot.hasResolvedPublicAddress),
       publicAddress: snapshot.publicAddress,
       tunnel: snapshot.activeTunnel,
+      settings: {
+        autoEnable: Boolean(snapshot.hostingSettings.autoEnable),
+        defaultProvider: snapshot.hostingSettings.defaultProvider,
+        consentVersion: snapshot.hostingSettings.consentVersion,
+        consentAcceptedAt: snapshot.hostingSettings.consentAcceptedAt,
+        consentCurrentVersion: PLAYIT_CONSENT_VERSION
+      },
       steps: snapshot.steps
     };
   });
@@ -3068,6 +3381,10 @@ export async function registerApiRoutes(
       },
       quickHosting: {
         enabled: Boolean(snapshot.activeTunnel),
+        autoEnable: Boolean(snapshot.hostingSettings.autoEnable),
+        defaultProvider: snapshot.hostingSettings.defaultProvider,
+        consentRequired:
+          snapshot.hostingSettings.defaultProvider === "playit" && snapshot.hostingSettings.consentVersion !== PLAYIT_CONSENT_VERSION,
         status: snapshot.activeTunnel?.status ?? "disabled",
         endpointPending: Boolean(snapshot.activeTunnel && !snapshot.publicAddress),
         diagnostics: snapshot.diagnostics
@@ -3170,7 +3487,12 @@ export async function registerApiRoutes(
         },
         tunnel: {
           enabled: Boolean(snapshot.activeTunnel),
+          autoEnable: Boolean(snapshot.hostingSettings.autoEnable),
           provider: snapshot.activeTunnel?.provider ?? null,
+          defaultProvider: snapshot.hostingSettings.defaultProvider,
+          consentVersion: snapshot.hostingSettings.consentVersion,
+          consentAcceptedAt: snapshot.hostingSettings.consentAcceptedAt,
+          consentCurrentVersion: PLAYIT_CONSENT_VERSION,
           status: snapshot.activeTunnel?.status ?? "disabled",
           publicAddress: snapshot.publicAddress,
           endpointPending: Boolean(snapshot.activeTunnel && !snapshot.publicAddress),

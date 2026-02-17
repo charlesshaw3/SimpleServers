@@ -268,6 +268,19 @@ export function SetupWizard(props: SetupWizardProps) {
                     </div>
                   </li>
                 </ul>
+                {model.quickPublicHosting ? (
+                  <p className="muted-note">
+                    Public hosting uses Playit.gg by default. By enabling it, you agree to{" "}
+                    <a href="https://playit.gg/terms-of-service" target="_blank" rel="noreferrer">
+                      Playit Terms
+                    </a>{" "}
+                    and{" "}
+                    <a href="https://playit.gg/privacy-policy" target="_blank" rel="noreferrer">
+                      Privacy Policy
+                    </a>
+                    .
+                  </p>
+                ) : null}
                 {preflightHints.length > 0 ? (
                   <>
                     <h4>Preflight Risk Hints</h4>

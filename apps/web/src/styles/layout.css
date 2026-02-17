@@ -1,19 +1,32 @@
 .v2-shell {
   width: min(1380px, 95vw);
-  margin: 16px auto 56px;
+  margin: 20px auto 64px;
   display: grid;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .v2-main {
   display: grid;
-  gap: 16px;
+  gap: var(--space-6);
+}
+
+.v2-shell .panel {
+  padding: var(--space-6);
 }
 
 @media (max-width: 760px) {
   .v2-shell {
     width: min(100vw, 100%);
-    margin: 10px auto 32px;
+    margin: 10px auto 36px;
     padding: 10px;
+    gap: var(--space-4);
+  }
+
+  .v2-main {
+    gap: var(--space-4);
+  }
+
+  .v2-shell .panel {
+    padding: var(--space-4);
   }
 }

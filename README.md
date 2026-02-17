@@ -2,10 +2,10 @@
 
 SimpleServers is an open-source, local-first Minecraft server hosting and administration platform.
 
-Latest stable desktop release: `v0.5.4`
+Latest stable desktop release: `v0.5.5`
 
 - Releases: `https://github.com/dueldev/SimpleServers/releases`
-- Current release: `https://github.com/dueldev/SimpleServers/releases/tag/v0.5.4`
+- Current release: `https://github.com/dueldev/SimpleServers/releases/tag/v0.5.5`
 
 ## Production Highlights
 
@@ -22,10 +22,11 @@ Latest stable desktop release: `v0.5.4`
 - Provisioning for `Vanilla`, `Paper`, and `Fabric` with guided presets.
 - Managed Java bootstrap and hardware-aware memory sizing.
 - Live WebSocket console, preflight diagnostics, safe-restart, and support bundle export.
-- One-click quick hosting (`playit`, `manual`, `cloudflared`, `ngrok`) with diagnostics and guided recovery actions.
+- Quick hosting defaults to `playit` on create/start/restart with consent-aware legal notice and diagnostics.
+- Optional providers remain available (`manual`, `cloudflared`, `ngrok`) via v2 networking settings.
 - Backups with pre-restore safety snapshot, retention policy, cloud destinations, and verified cloud restore.
 - Content manager with Modrinth/CurseForge install/update plus modpack plan/import/rollback.
-- Player admin flows (ops/whitelist/player+IP bans/history).
+- Player admin flows (ops/whitelist/player+IP bans/history) plus clickable cached player profiles with modal actions.
 - Reliability and trust surfaces (performance advisor, reliability dashboard, trust report, checksum verification, audit export).
 - Local-first security model with RBAC tokens, audit trail, and optional hardened remote-control mode.
 
@@ -91,6 +92,11 @@ npm run test:ui:live
 
 ## Recent Release Notes
 
+- `v0.5.5`
+  - Defaulted public hosting to Playit for new servers with persisted provider settings and lifecycle auto-connect.
+  - Added Playit legal consent surfaces in setup review and workspace networking settings.
+  - Added v2 player profile modal actions from cached players (`op`, `deop`, `whitelist`, `un-whitelist`, `ban`, `unban`).
+  - Increased v2 shell spacing/density tokens and panel rhythm to reduce crowded layouts.
 - `v0.5.4`
   - Added v2 shell architecture (`Servers -> Setup Wizard -> Workspace`) with modular frontend feature layout.
   - Added setup session APIs and single-use launch handoff.

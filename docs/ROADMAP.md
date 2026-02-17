@@ -2,7 +2,19 @@
 
 ## Status
 
-Current stable milestone: `v0.5.4` (validated by typecheck, build, API integration tests, web e2e, and UI live smoke).
+Current stable milestone: `v0.5.5` (validated by typecheck, build, API integration tests, web e2e, and UI live smoke).
+
+## Implemented in v0.5.5
+
+- Defaulted public hosting to Playit for new servers (`autoEnable=1`, `defaultProvider=playit`) with persisted per-server hosting settings.
+- Added lifecycle auto-connect for preferred tunnel provider during create/quickstart/start/restart flows.
+- Added Playit consent persistence and legal notice surfaces for v2 setup review and workspace networking settings.
+- Added diagnostics auth handoff fields (`authRequired`, `authUrl`, `authCode`, `authObservedAt`) and `open_playit_auth` fix path.
+- Added profile-aware player admin state and unified player action endpoint:
+  - `POST /servers/:id/player-admin/action`
+- Added clickable cached player profiles in v2 Players tab and right rail with working modal actions:
+  - `op`, `deop`, `whitelist`, `un-whitelist`, `ban`, `unban`
+- Increased v2 spacing tokens/padding and reduced crowded layout density in shell, workspace, and wizard surfaces.
 
 ## Implemented in v0.5.4
 

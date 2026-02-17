@@ -92,7 +92,7 @@ describe("api integration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().build.appVersion).toBe("0.5.4");
+    expect(response.json().build.appVersion).toBe("0.5.5");
     expect(response.json().security.localOnlyByDefault).toBe(true);
     expect(response.json().security.authModel).toBe("token-rbac");
     expect(response.json().exports.auditExportEndpoint).toBe("/audit/export");
@@ -325,6 +325,28 @@ describe("api integration", () => {
     expect(stateResponse.json().state.ops.some((entry: { name: string }) => entry.name === "Alice")).toBe(true);
     expect(stateResponse.json().state.whitelist.some((entry: { name: string }) => entry.name === "Alice")).toBe(true);
     expect(stateResponse.json().state.bannedIps.some((entry: { ip: string }) => entry.ip === "203.0.113.10")).toBe(true);
+    expect(stateResponse.json().state.profiles.some((entry: { name: string; isOp: boolean }) => entry.name === "Alice" && entry.isOp)).toBe(
+      true
+    );
+
+    const modalActionResponse = await app.inject({
+      method: "POST",
+      url: `/servers/${server.id}/player-admin/action`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        action: "ban",
+        name: "Alice",
+        reason: "integration test"
+      }
+    });
+    expect(modalActionResponse.statusCode).toBe(200);
+    expect(
+      modalActionResponse
+        .json()
+        .state.bannedPlayers.some((entry: { name: string; reason: string | null }) => entry.name === "Alice" && entry.reason === "integration test")
+    ).toBe(true);
   });
 
   it("supports modpack planning and rollback history endpoints", async () => {
@@ -1070,6 +1092,33 @@ describe("api integration", () => {
       maxMemoryMb: 2048
     });
 
+    const initialEnable = await app.inject({
+      method: "POST",
+      url: `/servers/${quickHostServer.id}/public-hosting/quick-enable`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {}
+    });
+    expect(initialEnable.statusCode).toBe(200);
+    expect(initialEnable.json().tunnel).toBeNull();
+    expect(initialEnable.json().warning).toContain("consent");
+
+    const consent = await app.inject({
+      method: "PUT",
+      url: `/servers/${quickHostServer.id}/public-hosting/settings`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        autoEnable: true,
+        defaultProvider: "playit",
+        consentAccepted: true
+      }
+    });
+    expect(consent.statusCode).toBe(200);
+    expect(consent.json().settings.defaultProvider).toBe("playit");
+
     const enable = await app.inject({
       method: "POST",
       url: `/servers/${quickHostServer.id}/public-hosting/quick-enable`,
@@ -1416,6 +1465,20 @@ describe("api integration", () => {
       minMemoryMb: 1024,
       maxMemoryMb: 2048
     });
+
+    const consentResponse = await app.inject({
+      method: "PUT",
+      url: `/servers/${diagnosticsServer.id}/public-hosting/settings`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        autoEnable: true,
+        defaultProvider: "playit",
+        consentAccepted: true
+      }
+    });
+    expect(consentResponse.statusCode).toBe(200);
 
     const quickEnableResponse = await app.inject({
       method: "POST",

@@ -36,6 +36,8 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - `backups`: backup artifact metadata and restore markers.
 - `backup_policies`: retention rules and prune schedules.
 - `tunnels`: network exposure definitions and adapter state.
+- `server_public_hosting_settings`: per-server tunnel defaults (`auto_enable`, `default_provider`) and consent metadata.
+- `user_legal_consents`: provider legal acceptance records by user/version/timestamp.
 - `server_packages`: installed mods/plugins/modpacks/resourcepacks.
 - `crash_reports`: structured crash bundle references.
 - `ux_telemetry_events`: local dashboard funnel telemetry.
@@ -63,6 +65,7 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - Runtime service launches Java process with configured memory limits.
 - Console lines stream into in-memory hub and websocket clients.
 - Exit events update state, create alerts, and persist crash bundles.
+- When public hosting auto-enable is active, preferred tunnel provider is auto-ensured on create/start/restart flows.
 
 4. Startup safety
 
@@ -79,22 +82,29 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
   - player list/counts
   - key metrics and startup trend samples
   - tunnel summary state
+  - provider defaults and consent metadata
   - preflight state
   - primary action model
 
-6. Backups and restore
+6. Public hosting consent and diagnostics
+
+- Playit is the default provider for new server quick hosting settings.
+- Enabling Playit quick hosting requires current consent version acceptance.
+- Diagnostics expose auth handoff hints (`authUrl`, `authCode`) and legal links for provider terms/privacy.
+
+7. Backups and restore
 
 - Backups are tar.gz snapshots of server state.
 - Restore always creates a pre-restore safety snapshot first.
 - Retention worker prunes by max-count and max-age policy.
 
-7. Content operations
+8. Content operations
 
 - Search/list versions against Modrinth or CurseForge.
 - Compatibility resolution by server type, version, and loader hints.
 - Install/update/uninstall mapped to managed paths and tracked in DB.
 
-8. Remote access hardening
+9. Remote access hardening
 
 - Non-local requests are denied by default.
 - Remote mode must be explicitly enabled.
