@@ -4,6 +4,8 @@ type PlayerAdminState = {
   bannedPlayers: Array<{ uuid: string; name: string; reason: string }>;
   bannedIps: Array<{ ip: string; reason: string }>;
   knownPlayers: Array<{ name: string; uuid: string }>;
+  onlinePlayers?: Array<{ name: string; uuid: string }>;
+  capacity?: number;
   profiles?: Array<{
     name: string;
     uuid: string;
@@ -61,12 +63,17 @@ export function PlayersTab(props: PlayersTabProps) {
     onOpenProfile
   } = props;
 
-  const profileRows = (state?.profiles ?? state?.knownPlayers ?? []).slice(0, 18);
+  const knownRows = (state?.profiles ?? state?.knownPlayers ?? []).slice(0, 18);
+  const onlineRows = (state?.onlinePlayers ?? []).slice(0, 12);
+  const capacity = state?.capacity ?? 20;
 
   return (
     <section className="v2-players-tab">
       <article className="panel">
         <h3>Player Administration</h3>
+        <p className="muted-note">
+          Online now: {onlineRows.length}/{capacity} · Known cached players: {state?.knownPlayers.length ?? 0}
+        </p>
         <div className="grid-form">
           <label>
             Player Name
@@ -115,9 +122,39 @@ export function PlayersTab(props: PlayersTabProps) {
 
       <div className="dual-grid">
         <article className="panel">
+          <h3>Online Now</h3>
+          <ul className="list list-compact">
+            {onlineRows.map((entry) => (
+              <li key={`online-${entry.uuid}`}>
+                <button
+                  type="button"
+                  className="player-row-btn"
+                  onClick={() => onOpenProfile({ name: entry.name, uuid: entry.uuid })}
+                  aria-label={`Open player profile for ${entry.name}`}
+                >
+                  <div>
+                    <strong>{entry.name}</strong>
+                    <span>{entry.uuid}</span>
+                    <span className="status-pill tone-ok">online</span>
+                  </div>
+                </button>
+              </li>
+            ))}
+            {onlineRows.length === 0 ? (
+              <li>
+                <div>
+                  <strong>No active players</strong>
+                  <span>Players appear here in real time while connected.</span>
+                </div>
+              </li>
+            ) : null}
+          </ul>
+        </article>
+
+        <article className="panel">
           <h3>Known Players</h3>
           <ul className="list list-compact">
-            {profileRows.map((entry) => (
+            {knownRows.map((entry) => (
               <li key={entry.uuid}>
                 <button
                   type="button"
@@ -145,32 +182,32 @@ export function PlayersTab(props: PlayersTabProps) {
             ) : null}
           </ul>
         </article>
-
-        <article className="panel">
-          <h3>Admin and Runtime Events</h3>
-          <ul className="list list-compact">
-            {(state?.history ?? []).slice(0, 18).map((entry, index) => (
-              <li key={`${entry.ts}-${entry.kind}-${index}`}>
-                <div>
-                  <strong>{entry.kind}</strong>
-                  <span>{entry.subject}</span>
-                  <span>{entry.detail}</span>
-                  <span>{new Date(entry.ts).toLocaleString()}</span>
-                </div>
-                <span className={`status-pill ${entry.source === "admin" ? "tone-neutral" : "tone-ok"}`}>{entry.source}</span>
-              </li>
-            ))}
-            {(state?.history.length ?? 0) === 0 ? (
-              <li>
-                <div>
-                  <strong>No history yet</strong>
-                  <span>Player actions and runtime events will appear here.</span>
-                </div>
-              </li>
-            ) : null}
-          </ul>
-        </article>
       </div>
+
+      <article className="panel">
+        <h3>Admin and Runtime Events</h3>
+        <ul className="list list-compact">
+          {(state?.history ?? []).slice(0, 18).map((entry, index) => (
+            <li key={`${entry.ts}-${entry.kind}-${index}`}>
+              <div>
+                <strong>{entry.kind}</strong>
+                <span>{entry.subject}</span>
+                <span>{entry.detail}</span>
+                <span>{new Date(entry.ts).toLocaleString()}</span>
+              </div>
+              <span className={`status-pill ${entry.source === "admin" ? "tone-neutral" : "tone-ok"}`}>{entry.source}</span>
+            </li>
+          ))}
+          {(state?.history.length ?? 0) === 0 ? (
+            <li>
+              <div>
+                <strong>No history yet</strong>
+                <span>Player actions and runtime events will appear here.</span>
+              </div>
+            </li>
+          ) : null}
+        </ul>
+      </article>
     </section>
   );
 }

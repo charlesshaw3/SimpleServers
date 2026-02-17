@@ -159,6 +159,8 @@ type WorkspaceSummary = {
     known: number;
     capacity: number;
     list: Array<{ name: string; uuid: string }>;
+    onlineList?: Array<{ name: string; uuid: string }>;
+    knownList?: Array<{ name: string; uuid: string }>;
   };
   metrics: {
     windowHours: number;
@@ -449,6 +451,11 @@ type PlayerAdminState = {
     name: string;
     uuid: string;
   }>;
+  onlinePlayers?: Array<{
+    name: string;
+    uuid: string;
+  }>;
+  capacity?: number;
   profiles?: Array<{
     name: string;
     uuid: string;
@@ -863,6 +870,14 @@ function normalizeStatus(value: string | null | undefined): string {
   return (value ?? "unknown").toLowerCase();
 }
 
+function normalizeMigrationSource(source: string): string {
+  const normalized = source.trim().toLowerCase();
+  if (normalized === "squidservers" || normalized === "manifest" || normalized === "platform_manifest") {
+    return "platform_manifest";
+  }
+  return normalized || "unknown";
+}
+
 function isServerRunning(status: string | null | undefined): boolean {
   return normalizeStatus(status) === "running";
 }
@@ -1235,7 +1250,7 @@ export default function App() {
     javaPath: "java",
     jarPath: ""
   });
-  const [migrationSquidManifestPath, setMigrationSquidManifestPath] = useState("");
+  const [migrationPlatformManifestPath, setMigrationPlatformManifestPath] = useState("");
   const [cloudDestinationForm, setCloudDestinationForm] = useState({
     provider: "s3" as "s3" | "backblaze" | "google_drive",
     name: "Primary Cloud Backup",
@@ -2916,6 +2931,22 @@ export default function App() {
     return () => clearInterval(timer);
   }, [connected, selectedServerId, quickHostPending]);
 
+  useEffect(() => {
+    if (!connected || !uiV2ShellEnabled || v2Route.context !== "server-workspace") {
+      return;
+    }
+    const workspaceServerId = v2Route.serverId ?? selectedServerId;
+    if (!workspaceServerId) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshServerOperations(workspaceServerId, { background: true });
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [connected, uiV2ShellEnabled, v2Route.context, v2Route.serverId, selectedServerId]);
+
   function applyPreset(preset: "custom" | "survival" | "modded" | "minigame"): void {
     setCreateServer((previous) => {
       if (preset === "survival") {
@@ -4516,24 +4547,24 @@ export default function App() {
     }
   }
 
-  async function importSquidServersMigration(): Promise<void> {
-    const manifestPath = migrationSquidManifestPath.trim();
+  async function importPlatformManifestMigration(): Promise<void> {
+    const manifestPath = migrationPlatformManifestPath.trim();
     if (!manifestPath) {
-      setError("Provide a SquidServers manifest path.");
+      setError("Provide a platform manifest path.");
       return;
     }
 
     try {
       setRunningMigrationImport(true);
       const outcome = await api.current.post<{ imported: Array<{ serverId: string; name: string }>; failed: Array<{ name: string; error: string }> }>(
-        "/migration/import/squidservers",
+        "/migration/import/platform-manifest",
         {
           manifestPath,
           javaPath: migrationManualForm.javaPath.trim() || undefined
         }
       );
       await refreshAll();
-      setNotice(`SquidServers import complete. Imported ${outcome.imported.length}, failed ${outcome.failed.length}.`);
+      setNotice(`Platform manifest import complete. Imported ${outcome.imported.length}, failed ${outcome.failed.length}.`);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -4684,7 +4715,10 @@ export default function App() {
           lastSeenAt: null,
           lastActionAt: null
         };
-  const workspacePlayers = workspaceSummary?.players.list ?? playerAdminState?.knownPlayers ?? [];
+  const workspaceOnlinePlayers = workspaceSummary?.players.onlineList ?? playerAdminState?.onlinePlayers ?? [];
+  const workspaceKnownPlayers =
+    workspaceSummary?.players.knownList ?? workspaceSummary?.players.list ?? playerAdminState?.knownPlayers ?? [];
+  const workspaceOnlineCount = workspaceSummary?.players.online ?? workspaceOnlinePlayers.length;
   const v2UptimeSeconds =
     workspaceSummary?.metrics.uptimeSeconds ??
     (selectedServer ? Math.max(0, Math.floor((Date.now() - new Date(selectedServer.createdAt).getTime()) / 1000)) : null);
@@ -4697,7 +4731,7 @@ export default function App() {
   const v2ServerStatus = normalizeStatus(workspaceSummary?.server.status ?? selectedServer?.status);
   const v2CanStart = canStartServer(v2ServerStatus);
   const v2CanStop = canStopServer(v2ServerStatus);
-  const v2PlayerCapacity = workspaceSummary?.players.capacity ?? 20;
+  const v2PlayerCapacity = workspaceSummary?.players.capacity ?? playerAdminState?.capacity ?? 20;
   const resolvedSignatureStatus = desktopBridge?.signatureStatus ?? trustReport?.build.signatureStatus ?? null;
   const v2PreflightHints = useMemo(() => {
     const hints: string[] = [];
@@ -4763,7 +4797,16 @@ export default function App() {
       />
     ) : v2Route.tab === "players" ? (
       <PlayersTab
-        state={playerAdminState}
+        state={
+          playerAdminState
+            ? {
+                ...playerAdminState,
+                knownPlayers: workspaceKnownPlayers,
+                onlinePlayers: playerAdminState.onlinePlayers ?? workspaceOnlinePlayers,
+                capacity: playerAdminState.capacity ?? v2PlayerCapacity
+              }
+            : null
+        }
         playerActionName={playerActionName}
         playerActionUuid={playerActionUuid}
         playerBanReason={playerBanReason}
@@ -4878,6 +4921,9 @@ export default function App() {
   if (uiV2ShellEnabled) {
     return (
       <div className="v2-shell">
+        <a href="#v2-main-content" className="skip-link">
+          Skip to Main Content
+        </a>
         <ConnectionStatus
           connected={connected}
           busy={busy}
@@ -4894,7 +4940,7 @@ export default function App() {
         {error ? <div className="error-banner" role="alert">{error}</div> : null}
         {notice && !error ? <div className="notice-banner" aria-live="polite">{notice}</div> : null}
 
-        <main className="v2-main">
+        <main className="v2-main" id="v2-main-content" tabIndex={-1}>
           {v2Route.context === "servers-list" ? (
             <ServersListView
               servers={servers}
@@ -4921,7 +4967,7 @@ export default function App() {
               serverVersion={`${workspaceSummary?.server.type ?? selectedServer.type} ${workspaceSummary?.server.mcVersion ?? selectedServer.mcVersion}`}
               serverStatus={v2ServerStatus}
               publicAddress={v2InviteAddress}
-              playerCapacityLabel={`${workspacePlayers.length}/${v2PlayerCapacity} players`}
+              playerCapacityLabel={`${workspaceOnlineCount}/${v2PlayerCapacity} players`}
               canStart={v2CanStart}
               canStop={v2CanStop}
               onStart={() => {
@@ -4953,7 +4999,7 @@ export default function App() {
                   tab
                 }))
               }
-              players={workspacePlayers}
+              onlinePlayers={workspaceOnlinePlayers}
               playerSearch={workspacePlayerSearch}
               onPlayerSearchChange={setWorkspacePlayerSearch}
               onSelectPlayer={(player) => openPlayerProfile(player)}
@@ -8621,7 +8667,7 @@ export default function App() {
           <section className="dual-grid">
             <article className="panel">
               <h2>Migration Imports</h2>
-              <p className="muted-note">Import existing servers from manual directories or SquidServers manifests.</p>
+              <p className="muted-note">Import existing servers from manual directories or platform manifest files.</p>
               <form
                 className="grid-form"
                 onSubmit={(event) => {
@@ -8713,24 +8759,24 @@ export default function App() {
             </article>
 
             <article className="panel">
-              <h2>SquidServers Migration</h2>
+              <h2>Platform Manifest Import</h2>
               <form
                 className="grid-form"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void importSquidServersMigration();
+                  void importPlatformManifestMigration();
                 }}
               >
                 <label>
                   Manifest Path
                   <input
-                    value={migrationSquidManifestPath}
-                    onChange={(event) => setMigrationSquidManifestPath(event.target.value)}
-                    placeholder="/path/to/squidservers-manifest.json"
+                    value={migrationPlatformManifestPath}
+                    onChange={(event) => setMigrationPlatformManifestPath(event.target.value)}
+                    placeholder="/path/to/platform-manifest.json"
                   />
                 </label>
                 <button type="submit" disabled={runningMigrationImport}>
-                  {runningMigrationImport ? "Importing..." : "Import SquidServers Manifest"}
+                  {runningMigrationImport ? "Importing..." : "Import Platform Manifest"}
                 </button>
               </form>
               <h3>Recent Import History</h3>
@@ -8739,7 +8785,7 @@ export default function App() {
                   <li key={entry.id}>
                     <div>
                       <strong>{entry.name}</strong>
-                      <span>{entry.source} · {entry.status}</span>
+                      <span>{normalizeMigrationSource(entry.source)} · {entry.status}</span>
                       <span>{entry.detail}</span>
                     </div>
                     <span>{new Date(entry.createdAt).toLocaleString()}</span>

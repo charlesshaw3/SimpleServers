@@ -80,40 +80,102 @@ function writeJsonArray(filePath: string, value: unknown[]): void {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function parseRuntimePlayerHistory(serverRoot: string, limit: number): PlayerHistoryEntry[] {
+function parseServerPlayerCapacity(serverRoot: string): number {
+  const serverPropertiesPath = path.join(serverRoot, "server.properties");
+  if (!fs.existsSync(serverPropertiesPath)) {
+    return 20;
+  }
+
+  try {
+    const lines = fs.readFileSync(serverPropertiesPath, "utf8").split(/\r?\n/);
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#") || line.startsWith("!")) {
+        continue;
+      }
+      const separatorIndex = line.indexOf("=");
+      if (separatorIndex < 0) {
+        continue;
+      }
+      const key = line.slice(0, separatorIndex).trim().toLowerCase();
+      if (key !== "max-players") {
+        continue;
+      }
+      const value = line.slice(separatorIndex + 1).trim();
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed) && parsed > 0 && parsed <= 500_000) {
+        return parsed;
+      }
+      return 20;
+    }
+  } catch {
+    return 20;
+  }
+
+  return 20;
+}
+
+function parseRuntimePlayerState(
+  serverRoot: string,
+  limit: number
+): {
+  history: PlayerHistoryEntry[];
+  onlinePlayers: string[];
+} {
   const latestLog = path.join(serverRoot, "logs", "latest.log");
   if (!fs.existsSync(latestLog)) {
-    return [];
+    return {
+      history: [],
+      onlinePlayers: []
+    };
   }
 
   const lines = fs.readFileSync(latestLog, "utf8").split(/\r?\n/);
   const history: PlayerHistoryEntry[] = [];
+  const onlinePlayers = new Map<string, string>();
 
   for (const line of lines) {
     const stampMatch = line.match(/^\[([0-9]{2}:[0-9]{2}:[0-9]{2})\]/);
     const joinedMatch = line.match(/]: ([A-Za-z0-9_]{2,16}) joined the game/);
     const leftMatch = line.match(/]: ([A-Za-z0-9_]{2,16}) left the game/);
+    const disconnectMatch = line.match(/]: ([A-Za-z0-9_]{2,16}) lost connection: (.+)$/);
     const commandMatch = line.match(/]: ([A-Za-z0-9_]{2,16}) issued server command: (.+)$/);
     const ts = stampMatch ? `${new Date().toISOString().slice(0, 10)}T${stampMatch[1]}.000Z` : nowIso();
 
     if (joinedMatch) {
+      const playerName = joinedMatch[1];
       history.push({
         ts,
         kind: "player_join",
-        subject: joinedMatch[1],
+        subject: playerName,
         detail: "joined the game",
         source: "runtime"
       });
+      onlinePlayers.set(normalizeId(playerName), playerName);
       continue;
     }
     if (leftMatch) {
+      const playerName = leftMatch[1];
       history.push({
         ts,
         kind: "player_leave",
-        subject: leftMatch[1],
+        subject: playerName,
         detail: "left the game",
         source: "runtime"
       });
+      onlinePlayers.delete(normalizeId(playerName));
+      continue;
+    }
+    if (disconnectMatch) {
+      const playerName = disconnectMatch[1];
+      history.push({
+        ts,
+        kind: "player_disconnect",
+        subject: playerName,
+        detail: disconnectMatch[2].trim(),
+        source: "runtime"
+      });
+      onlinePlayers.delete(normalizeId(playerName));
       continue;
     }
     if (commandMatch) {
@@ -127,7 +189,10 @@ function parseRuntimePlayerHistory(serverRoot: string, limit: number): PlayerHis
     }
   }
 
-  return history.slice(-limit);
+  return {
+    history: history.slice(-limit),
+    onlinePlayers: [...onlinePlayers.values()].sort((a, b) => a.localeCompare(b))
+  };
 }
 
 export class PlayerAdminService {
@@ -160,6 +225,8 @@ export class PlayerAdminService {
     bannedPlayers: PlayerBanEntry[];
     bannedIps: IpBanEntry[];
     knownPlayers: Array<{ name: string; uuid: string }>;
+    onlinePlayers: Array<{ name: string; uuid: string }>;
+    capacity: number;
     profiles: PlayerProfile[];
     history: PlayerHistoryEntry[];
   } {
@@ -188,13 +255,24 @@ export class PlayerAdminService {
       detail: entry.detail,
       source: "admin" as const
     }));
-    const runtimeHistory = parseRuntimePlayerHistory(server.rootPath, historyLimit);
+    const runtimeState = parseRuntimePlayerState(server.rootPath, historyLimit);
+    const runtimeHistory = runtimeState.history;
 
     for (const entry of runtimeHistory) {
       const name = entry.subject.trim();
       if (!name) {
         continue;
       }
+      const key = normalizeId(name);
+      if (!known.has(key)) {
+        known.set(key, {
+          name,
+          uuid: uuidFallback(name)
+        });
+      }
+    }
+
+    for (const name of runtimeState.onlinePlayers) {
       const key = normalizeId(name);
       if (!known.has(key)) {
         known.set(key, {
@@ -211,8 +289,24 @@ export class PlayerAdminService {
     const opKeys = new Set(ops.flatMap((entry) => [normalizeId(entry.uuid), normalizeId(entry.name)]));
     const whitelistKeys = new Set(whitelist.flatMap((entry) => [normalizeId(entry.uuid), normalizeId(entry.name)]));
     const bannedKeys = new Set(bannedPlayers.flatMap((entry) => [normalizeId(entry.uuid), normalizeId(entry.name)]));
+    const knownPlayers = [...known.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const knownByName = new Map<string, { name: string; uuid: string }>();
+    for (const entry of knownPlayers) {
+      const key = normalizeId(entry.name);
+      if (!knownByName.has(key)) {
+        knownByName.set(key, entry);
+      }
+    }
 
-    const profiles = [...known.values()]
+    const onlinePlayers = runtimeState.onlinePlayers.map((name) => {
+      const knownEntry = knownByName.get(normalizeId(name));
+      return {
+        name: knownEntry?.name ?? name,
+        uuid: knownEntry?.uuid ?? uuidFallback(name)
+      };
+    });
+
+    const profiles = knownPlayers
       .map((entry) => {
         const keyUuid = normalizeId(entry.uuid);
         const keyName = normalizeId(entry.name);
@@ -235,7 +329,9 @@ export class PlayerAdminService {
       whitelist,
       bannedPlayers,
       bannedIps,
-      knownPlayers: [...known.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      knownPlayers,
+      onlinePlayers,
+      capacity: parseServerPlayerCapacity(server.rootPath),
       profiles,
       history
     };

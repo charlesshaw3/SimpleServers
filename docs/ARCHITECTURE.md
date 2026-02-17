@@ -79,32 +79,44 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 - `GET /servers/:id/workspace-summary` provides a normalized view model for v2 shell:
   - server identity/status/visibility
   - addresses
-  - player list/counts
+  - player list/counts:
+    - online truth derived from runtime join/leave/disconnect events parsed from `logs/latest.log`
+    - capacity derived from `server.properties` (`max-players`, fallback `20`)
+    - additive compatibility fields for `onlineList` and `knownList`
   - key metrics and startup trend samples
   - tunnel summary state
   - provider defaults and consent metadata
   - preflight state
   - primary action model
 
-6. Public hosting consent and diagnostics
+6. v2 accessibility behavior
+
+- Setup wizard and player profile modals use shared dialog focus management:
+  - focus trap
+  - Escape-to-close
+  - focus restoration on close
+- Workspace tabs implement WAI-ARIA tab semantics (`tablist`/`tab`/`tabpanel`) with Arrow/Home/End keyboard navigation.
+- v2 shell includes skip-link and main landmark targeting for keyboard-first navigation.
+
+7. Public hosting consent and diagnostics
 
 - Playit is the default provider for new server quick hosting settings.
 - Enabling Playit quick hosting requires current consent version acceptance.
 - Diagnostics expose auth handoff hints (`authUrl`, `authCode`) and legal links for provider terms/privacy.
 
-7. Backups and restore
+8. Backups and restore
 
 - Backups are tar.gz snapshots of server state.
 - Restore always creates a pre-restore safety snapshot first.
 - Retention worker prunes by max-count and max-age policy.
 
-8. Content operations
+9. Content operations
 
 - Search/list versions against Modrinth or CurseForge.
 - Compatibility resolution by server type, version, and loader hints.
 - Install/update/uninstall mapped to managed paths and tracked in DB.
 
-9. Remote access hardening
+10. Remote access hardening
 
 - Non-local requests are denied by default.
 - Remote mode must be explicitly enabled.
@@ -122,5 +134,4 @@ SimpleServers is a local-first control plane split into API, web UI, and desktop
 
 - Token-based auth only (no OIDC/password auth yet).
 - Tunnel process adapters rely on local binary availability.
-- Real-time online-player counts are not yet fully represented in workspace summary.
 - CurseForge metadata classification is less precise than Modrinth for some project types.

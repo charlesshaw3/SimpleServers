@@ -50,7 +50,7 @@ const ignoredDirectoryNames = new Set(["node_modules", "libraries", ".git", "cac
 const maxEditableFileBytes = 1024 * 1024; // 1 MB safety guard for in-app editing.
 const maxEditorFiles = 350;
 const maxEditorDepth = 5;
-const APP_VERSION = "0.5.5";
+const APP_VERSION = "0.5.6";
 const PLAYIT_CONSENT_VERSION = "playit-terms-v1";
 const REPOSITORY_URL = "https://github.com/dueldev/SimpleServers";
 const SETUP_SESSION_TTL_MS = 15 * 60 * 1000;
@@ -305,7 +305,7 @@ const migrationManualSchema = z.object({
   jarPath: z.string().trim().min(1).max(2048).optional()
 });
 
-const migrationSquidSchema = z.object({
+const migrationPlatformManifestSchema = z.object({
   manifestPath: z.string().trim().min(1).max(2048),
   javaPath: z.string().trim().min(1).max(1024).optional()
 });
@@ -3466,10 +3466,12 @@ export async function registerApiRoutes(
           invite: snapshot.publicAddress
         },
         players: {
-          online: 0,
+          online: playerState.onlinePlayers.length,
           known: playerState.knownPlayers.length,
-          capacity: 20,
-          list: playerState.knownPlayers
+          capacity: playerState.capacity,
+          list: playerState.knownPlayers,
+          onlineList: playerState.onlinePlayers,
+          knownList: playerState.knownPlayers
         },
         metrics: {
           windowHours: WORKSPACE_SUMMARY_WINDOW_HOURS,
@@ -4013,9 +4015,9 @@ export async function registerApiRoutes(
     };
   });
 
-  const importLegacyManifest = (request: { body?: unknown; user?: { username: string } }) => {
-    const payload = migrationSquidSchema.parse(request.body ?? {});
-    const outcome = deps.migration.importSquidServersManifest({
+  const importPlatformManifest = (request: { body?: unknown; user?: { username: string } }) => {
+    const payload = migrationPlatformManifestSchema.parse(request.body ?? {});
+    const outcome = deps.migration.importPlatformManifest({
       manifestPath: payload.manifestPath,
       javaPath: payload.javaPath
     });
@@ -4026,13 +4028,20 @@ export async function registerApiRoutes(
     return outcome;
   };
 
-  app.post("/migration/import/manifest", { preHandler: [authenticate, requireRole("admin")] }, async (request) =>
-    importLegacyManifest(request)
+  app.post("/migration/import/platform-manifest", { preHandler: [authenticate, requireRole("admin")] }, async (request) =>
+    importPlatformManifest(request)
   );
 
-  app.post("/migration/import/squidservers", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
-    // Backward-compatible legacy route; use /migration/import/manifest for new clients.
-    return importLegacyManifest(request);
+  app.post("/migration/import/manifest", { preHandler: [authenticate, requireRole("admin")] }, async (request) =>
+    importPlatformManifest(request)
+  );
+
+  app.post("/migration/import/squidservers", { preHandler: [authenticate, requireRole("admin")] }, async (request, reply) => {
+    // Backward-compatible legacy alias; clients should migrate to /migration/import/platform-manifest.
+    reply.header("x-simpleservers-deprecated-route", "/migration/import/squidservers");
+    reply.header("x-simpleservers-canonical-route", "/migration/import/platform-manifest");
+    reply.header("warning", '299 - "Deprecated route. Use /migration/import/platform-manifest"');
+    return importPlatformManifest(request);
   });
 
   app.get("/servers/:id/crash-reports", { preHandler: [authenticate] }, async (request) => {

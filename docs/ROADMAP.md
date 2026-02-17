@@ -2,7 +2,23 @@
 
 ## Status
 
-Current stable milestone: `v0.5.5` (validated by typecheck, build, API integration tests, web e2e, and UI live smoke).
+Current stable milestone: `v0.5.6` (validated by typecheck, build, API integration tests, web e2e, and UI live smoke).
+
+## Implemented in v0.5.6
+
+- Added real-time online-player truth in workspace contracts:
+  - `GET /servers/:id/player-admin` now includes additive `onlinePlayers` and `capacity`.
+  - `GET /servers/:id/workspace-summary` now includes additive `players.onlineList` and `players.knownList`.
+  - `players.online` and `players.capacity` now derive from runtime log/config state instead of fixed placeholders.
+- Added deterministic runtime player-state parsing from `logs/latest.log` for join/leave/disconnect tracking.
+- Added capacity resolver from `server.properties` `max-players` with fallback to `20`.
+- Added v2 accessibility upgrades:
+  - shared accessible dialog focus/escape handling for setup wizard and player profile modal.
+  - ARIA-compliant workspace tab semantics with keyboard Arrow/Home/End navigation.
+  - v2 skip-link + main landmark targeting, stronger focus-ring/target-size consistency.
+- Added canonical migration route:
+  - `POST /migration/import/platform-manifest`
+  - kept compatibility aliases while shifting v2/legacy user-facing copy to vendor-neutral “Platform Manifest” wording.
 
 ## Implemented in v0.5.5
 
@@ -64,8 +80,6 @@ Current stable milestone: `v0.5.5` (validated by typecheck, build, API integrati
 
 ## Next Track
 
-- Real-time online-player count integration into `workspace-summary` metrics.
-- Additional accessibility pass across v2 shell keyboard/focus behavior.
 - Deeper performance profiling (tick time, chunk loading, plugin timings).
 - Optional remote multi-factor auth for internet-exposed control planes.
 - Backup encryption-at-rest plus more external object storage adapters.

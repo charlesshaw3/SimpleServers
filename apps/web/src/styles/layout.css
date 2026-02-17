@@ -14,6 +14,16 @@
   padding: var(--space-6);
 }
 
+.v2-shell :is(button, [role="tab"], input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  min-height: 44px;
+}
+
+.v2-shell :is(button, [role="tab"], input, select, textarea, a):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 84%, white);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 24%, transparent);
+}
+
 @media (max-width: 760px) {
   .v2-shell {
     width: min(100vw, 100%);

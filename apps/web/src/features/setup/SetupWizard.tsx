@@ -1,3 +1,6 @@
+import { useId, useRef } from "react";
+import { useAccessibleDialog } from "../common/useAccessibleDialog";
+
 type WizardServerType = "vanilla" | "paper" | "fabric";
 type WizardMemoryPreset = "small" | "recommended" | "large";
 type WizardWorldSource = "new" | "import";
@@ -67,19 +70,40 @@ export function SetupWizard(props: SetupWizardProps) {
     onContinueToWorkspace
   } = props;
 
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const headingId = useId();
+  const descriptionId = useId();
+  const { onBackdropClick } = useAccessibleDialog({
+    open: visible,
+    dialogRef,
+    initialFocusRef: closeButtonRef,
+    onRequestClose: onClose
+  });
+
   if (!visible) {
     return null;
   }
 
   return (
-    <section className="v2-wizard-backdrop" role="presentation">
-      <article className="v2-wizard panel" role="dialog" aria-modal="true" aria-label="Server setup wizard">
+    <section className="v2-wizard-backdrop" role="presentation" onClick={onBackdropClick}>
+      <article
+        ref={dialogRef}
+        className="v2-wizard panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
+      >
         <div className="v2-wizard-header">
           <div>
-            <h2>Minecraft Server Setup Wizard</h2>
-            <p className="muted-note">Configure your server in a focused 5-step flow.</p>
+            <h2 id={headingId}>Minecraft Server Setup Wizard</h2>
+            <p id={descriptionId} className="muted-note">
+              Configure your server in a focused 5-step flow.
+            </p>
           </div>
-          <button type="button" onClick={onClose}>
+          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close setup wizard">
             Close
           </button>
         </div>

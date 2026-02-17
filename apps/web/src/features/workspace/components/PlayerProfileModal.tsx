@@ -1,3 +1,6 @@
+import { useId, useRef } from "react";
+import { useAccessibleDialog } from "../../common/useAccessibleDialog";
+
 type PlayerProfile = {
   name: string;
   uuid: string;
@@ -20,19 +23,39 @@ type PlayerProfileModalProps = {
 
 export function PlayerProfileModal(props: PlayerProfileModalProps) {
   const { visible, profile, runningAction, banReason, onBanReasonChange, onClose, onRunAction } = props;
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const headingId = useId();
+  const descriptionId = useId();
+  const { onBackdropClick } = useAccessibleDialog({
+    open: visible && profile !== null,
+    dialogRef,
+    initialFocusRef: closeButtonRef,
+    onRequestClose: onClose
+  });
   if (!visible || !profile) {
     return null;
   }
 
   return (
-    <section className="v2-modal-backdrop" role="presentation">
-      <article className="panel v2-modal" role="dialog" aria-modal="true" aria-label="Player Profile">
+    <section className="v2-modal-backdrop" role="presentation" onClick={onBackdropClick}>
+      <article
+        ref={dialogRef}
+        className="panel v2-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
+      >
         <header className="v2-modal-header">
           <div>
-            <h3>{profile.name}</h3>
-            <p className="muted-note">{profile.uuid}</p>
+            <h3 id={headingId}>{profile.name}</h3>
+            <p id={descriptionId} className="muted-note">
+              {profile.uuid}
+            </p>
           </div>
-          <button type="button" onClick={onClose}>
+          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close player profile">
             Close
           </button>
         </header>

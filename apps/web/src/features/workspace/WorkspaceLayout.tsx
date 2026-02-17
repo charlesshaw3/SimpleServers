@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { type KeyboardEvent, type ReactNode, useId } from "react";
 
 export type WorkspaceTab = "dashboard" | "console" | "players" | "backups" | "scheduler" | "settings";
 
@@ -21,7 +21,7 @@ type WorkspaceLayoutProps = {
   onKill: () => void;
   activeTab: WorkspaceTab;
   onChangeTab: (tab: WorkspaceTab) => void;
-  players: WorkspacePlayer[];
+  onlinePlayers: WorkspacePlayer[];
   playerSearch: string;
   onPlayerSearchChange: (value: string) => void;
   onSelectPlayer: (player: WorkspacePlayer) => void;
@@ -52,14 +52,45 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
     onKill,
     activeTab,
     onChangeTab,
-    players,
+    onlinePlayers,
     playerSearch,
     onPlayerSearchChange,
     onSelectPlayer,
     children
   } = props;
 
-  const filteredPlayers = players.filter((entry) => entry.name.toLowerCase().includes(playerSearch.trim().toLowerCase()));
+  const tabsIdPrefix = useId();
+  const playerSearchId = useId();
+  const activeIndex = tabs.findIndex((tab) => tab.id === activeTab);
+  const activeTabRecord = tabs[Math.max(0, activeIndex)];
+  const filteredPlayers = onlinePlayers.filter((entry) => entry.name.toLowerCase().includes(playerSearch.trim().toLowerCase()));
+
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    const max = tabs.length - 1;
+    let nextIndex = index;
+    if (event.key === "ArrowRight") {
+      nextIndex = index === max ? 0 : index + 1;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = index === 0 ? max : index - 1;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = max;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    onChangeTab(nextTab.id);
+    const nextTabId = `${tabsIdPrefix}-tab-${nextTab.id}`;
+    window.requestAnimationFrame(() => {
+      const nextTabButton = document.getElementById(nextTabId);
+      if (nextTabButton instanceof HTMLButtonElement) {
+        nextTabButton.focus();
+      }
+    });
+  };
 
   return (
     <section className="v2-workspace">
@@ -97,14 +128,33 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
 
       <section className="v2-workspace-grid">
         <article className="panel v2-workspace-main">
-          <nav className="v2-workspace-tabs" aria-label="Server workspace tabs">
-            {tabs.map((tab) => (
-              <button key={tab.id} type="button" className={activeTab === tab.id ? "active" : ""} onClick={() => onChangeTab(tab.id)}>
+          <nav className="v2-workspace-tabs" role="tablist" aria-label="Server workspace tabs">
+            {tabs.map((tab, index) => (
+              <button
+                key={tab.id}
+                id={`${tabsIdPrefix}-tab-${tab.id}`}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                aria-controls={`${tabsIdPrefix}-panel-${tab.id}`}
+                tabIndex={activeTab === tab.id ? 0 : -1}
+                className={activeTab === tab.id ? "active" : ""}
+                onClick={() => onChangeTab(tab.id)}
+                onKeyDown={(event) => onTabKeyDown(event, index)}
+              >
                 {tab.label}
               </button>
             ))}
           </nav>
-          <div className="v2-tab-content">{children}</div>
+          <div
+            className="v2-tab-content"
+            id={`${tabsIdPrefix}-panel-${activeTabRecord.id}`}
+            role="tabpanel"
+            aria-labelledby={`${tabsIdPrefix}-tab-${activeTabRecord.id}`}
+            tabIndex={0}
+          >
+            {children}
+          </div>
         </article>
 
         <aside className="panel v2-workspace-rail">
@@ -112,9 +162,14 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             <h3>Online Players</h3>
             <span className="muted-note">{filteredPlayers.length}</span>
           </div>
-          <label>
+          <label htmlFor={playerSearchId}>
             Search players
-            <input value={playerSearch} onChange={(event) => onPlayerSearchChange(event.target.value)} placeholder="Player name..." />
+            <input
+              id={playerSearchId}
+              value={playerSearch}
+              onChange={(event) => onPlayerSearchChange(event.target.value)}
+              placeholder="Player name..."
+            />
           </label>
           <ul className="list list-compact">
             {filteredPlayers.map((entry) => (
@@ -136,7 +191,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
               <li>
                 <div>
                   <strong>No players found</strong>
-                  <span>Players will appear here while the server is running.</span>
+                  <span>Online players will appear here while the server is running.</span>
                 </div>
               </li>
             ) : null}

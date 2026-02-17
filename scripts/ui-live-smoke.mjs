@@ -73,7 +73,12 @@ async function runDesktopSmoke(browser) {
   if ((await openWorkspaceButtons.count()) > 0) {
     await openWorkspaceButtons.first().click();
     await page.getByRole("heading", { name: "Server Controls" }).waitFor({ timeout: 20_000 });
-    await page.getByRole("button", { name: "Console" }).click();
+    const consoleTabs = page.getByRole("tab", { name: "Console" });
+    if ((await consoleTabs.count()) > 0) {
+      await consoleTabs.first().click();
+    } else {
+      await page.getByRole("button", { name: "Console" }).click();
+    }
     await page.getByRole("heading", { name: "Preflight Diagnostics" }).waitFor({ timeout: 20_000 });
   } else {
     const createButtons = page.getByRole("button", { name: /Create Server|Create Your First Server/ });

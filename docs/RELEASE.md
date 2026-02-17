@@ -3,7 +3,7 @@
 SimpleServers ships desktop artifacts via Electron Builder and GitHub Actions.
 
 Canonical repository: `https://github.com/dueldev/SimpleServers`
-Current stable tag: `v0.5.5`
+Current stable tag: `v0.5.6`
 
 ## Workflows
 
@@ -100,6 +100,11 @@ Default log paths:
 
 ## Recent Release Notes
 
+- `v0.5.6`
+  - Added runtime-derived online-player truth and capacity in player/workspace API contracts (`onlinePlayers`, `onlineList`, `knownList`, resolved `capacity`).
+  - Added v2 accessibility pass: shared dialog focus trap + Escape behavior, ARIA tab semantics with keyboard navigation, and v2 skip-link/main landmark targeting.
+  - Added canonical vendor-neutral migration endpoint (`POST /migration/import/platform-manifest`) and retained compatibility aliases.
+  - Updated v2 migration copy to “Platform Manifest Import” language and normalized legacy import source labels in UI.
 - `v0.5.5`
   - Defaulted public hosting to Playit for new servers with persisted per-server provider settings and lifecycle auto-connect behavior.
   - Added consent-aware Playit legal notice flow (setup review + workspace networking settings) with stored consent version/timestamp.

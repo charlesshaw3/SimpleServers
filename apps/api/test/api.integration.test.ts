@@ -92,7 +92,7 @@ describe("api integration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().build.appVersion).toBe("0.5.5");
+    expect(response.json().build.appVersion).toBe("0.5.6");
     expect(response.json().security.localOnlyByDefault).toBe(true);
     expect(response.json().security.authModel).toBe("token-rbac");
     expect(response.json().exports.auditExportEndpoint).toBe("/audit/export");
@@ -264,6 +264,17 @@ describe("api integration", () => {
     const serverRoot = path.join(testDataDir, "servers", "player-admin-server");
     fs.mkdirSync(serverRoot, { recursive: true });
     fs.writeFileSync(path.join(serverRoot, "server.jar"), "placeholder", "utf8");
+    fs.mkdirSync(path.join(serverRoot, "logs"), { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=player-admin\nmax-players=32\n", "utf8");
+    fs.writeFileSync(
+      path.join(serverRoot, "logs", "latest.log"),
+      [
+        "[12:00:00] [Server thread/INFO]: Alice joined the game",
+        "[12:00:05] [Server thread/INFO]: Bob joined the game",
+        "[12:00:15] [Server thread/INFO]: Bob left the game"
+      ].join("\n"),
+      "utf8"
+    );
     const server = store.createServer({
       name: "player-admin-server",
       type: "paper",
@@ -325,6 +336,8 @@ describe("api integration", () => {
     expect(stateResponse.json().state.ops.some((entry: { name: string }) => entry.name === "Alice")).toBe(true);
     expect(stateResponse.json().state.whitelist.some((entry: { name: string }) => entry.name === "Alice")).toBe(true);
     expect(stateResponse.json().state.bannedIps.some((entry: { ip: string }) => entry.ip === "203.0.113.10")).toBe(true);
+    expect(stateResponse.json().state.onlinePlayers).toEqual([{ name: "Alice", uuid: expect.any(String) }]);
+    expect(stateResponse.json().state.capacity).toBe(32);
     expect(stateResponse.json().state.profiles.some((entry: { name: string; isOp: boolean }) => entry.name === "Alice" && entry.isOp)).toBe(
       true
     );
@@ -427,19 +440,19 @@ describe("api integration", () => {
     expect(listResponse.json().imports.some((entry: { source: string }) => entry.source === "manual")).toBe(true);
   });
 
-  it("imports legacy manifest sources through migration manifest endpoint", async () => {
+  it("imports platform manifests through canonical and compatibility routes", async () => {
     const rootPath = path.join(testDataDir, "migration-manifest-server");
     fs.mkdirSync(rootPath, { recursive: true });
     fs.writeFileSync(path.join(rootPath, "server.jar"), "placeholder", "utf8");
 
-    const manifestPath = path.join(testDataDir, "migration-manifest.json");
+    const manifestPath = path.join(testDataDir, "migration-platform-manifest.json");
     fs.writeFileSync(
       manifestPath,
       JSON.stringify(
         {
           servers: [
             {
-              name: "manifest-import-server",
+              name: "platform-manifest-import-server",
               type: "paper",
               mcVersion: "1.21.11",
               rootPath,
@@ -455,9 +468,9 @@ describe("api integration", () => {
       "utf8"
     );
 
-    const response = await app.inject({
+    const canonicalResponse = await app.inject({
       method: "POST",
-      url: "/migration/import/manifest",
+      url: "/migration/import/platform-manifest",
       headers: {
         "x-api-token": "test-owner-token"
       },
@@ -466,9 +479,86 @@ describe("api integration", () => {
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json().imported.length).toBe(1);
-    expect(response.json().failed.length).toBe(0);
+    expect(canonicalResponse.statusCode).toBe(200);
+    expect(canonicalResponse.json().imported.length).toBe(1);
+    expect(canonicalResponse.json().failed.length).toBe(0);
+
+    const aliasManifestPath = path.join(testDataDir, "migration-manifest-alias.json");
+    fs.writeFileSync(
+      aliasManifestPath,
+      JSON.stringify(
+        {
+          servers: [
+            {
+              name: "manifest-alias-import-server",
+              type: "paper",
+              mcVersion: "1.21.11",
+              rootPath,
+              port: 25625,
+              minMemoryMb: 1024,
+              maxMemoryMb: 4096
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const aliasResponse = await app.inject({
+      method: "POST",
+      url: "/migration/import/manifest",
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        manifestPath: aliasManifestPath
+      }
+    });
+    expect(aliasResponse.statusCode).toBe(200);
+    expect(aliasResponse.json().imported.length).toBe(1);
+    expect(aliasResponse.json().failed.length).toBe(0);
+
+    const legacyManifestPath = path.join(testDataDir, "migration-manifest-legacy.json");
+    fs.writeFileSync(
+      legacyManifestPath,
+      JSON.stringify(
+        {
+          servers: [
+            {
+              name: "manifest-legacy-import-server",
+              type: "paper",
+              mcVersion: "1.21.11",
+              rootPath,
+              port: 25626,
+              minMemoryMb: 1024,
+              maxMemoryMb: 4096
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const legacyResponse = await app.inject({
+      method: "POST",
+      url: "/migration/import/squidservers",
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        manifestPath: legacyManifestPath
+      }
+    });
+    expect(legacyResponse.statusCode).toBe(200);
+    expect(legacyResponse.json().imported.length).toBe(1);
+    expect(legacyResponse.json().failed.length).toBe(0);
+    expect(legacyResponse.headers["x-simpleservers-deprecated-route"]).toBe("/migration/import/squidservers");
+    expect(legacyResponse.headers["x-simpleservers-canonical-route"]).toBe("/migration/import/platform-manifest");
+    expect(String(legacyResponse.headers.warning ?? "")).toContain("/migration/import/platform-manifest");
   });
 
   it("routes terminal command submissions to runtime command dispatcher", async () => {
@@ -1194,11 +1284,21 @@ describe("api integration", () => {
     fs.mkdirSync(serverRoot, { recursive: true });
     fs.writeFileSync(path.join(serverRoot, "server.jar"), "placeholder", "utf8");
     fs.writeFileSync(path.join(serverRoot, "eula.txt"), "eula=true\n", "utf8");
-    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=workspace-summary\n", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=workspace-summary\nmax-players=42\n", "utf8");
     fs.writeFileSync(path.join(serverRoot, "ops.json"), "[]\n", "utf8");
     fs.writeFileSync(path.join(serverRoot, "whitelist.json"), "[]\n", "utf8");
     fs.writeFileSync(path.join(serverRoot, "banned-players.json"), "[]\n", "utf8");
     fs.writeFileSync(path.join(serverRoot, "banned-ips.json"), "[]\n", "utf8");
+    fs.mkdirSync(path.join(serverRoot, "logs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(serverRoot, "logs", "latest.log"),
+      [
+        "[12:00:00] [Server thread/INFO]: SummaryPlayer joined the game",
+        "[12:00:15] [Server thread/INFO]: LateJoiner joined the game",
+        "[12:01:01] [Server thread/INFO]: LateJoiner left the game"
+      ].join("\n"),
+      "utf8"
+    );
 
     const server = store.createServer({
       name: "workspace-summary-server",
@@ -1270,7 +1370,41 @@ describe("api integration", () => {
     expect(summaryResponse.json().summary.metrics.openAlerts).toBeGreaterThan(0);
     expect(summaryResponse.json().summary.metrics.crashes).toBeGreaterThan(0);
     expect(summaryResponse.json().summary.players.known).toBeGreaterThan(0);
+    expect(summaryResponse.json().summary.players.online).toBe(1);
+    expect(summaryResponse.json().summary.players.capacity).toBe(42);
+    expect(summaryResponse.json().summary.players.onlineList).toEqual([{ name: "SummaryPlayer", uuid: expect.any(String) }]);
+    expect(summaryResponse.json().summary.players.knownList.length).toBeGreaterThan(0);
     expect(summaryResponse.json().summary.primaryAction.id).toBe("start_server");
+  });
+
+  it("falls back to default workspace player capacity when max-players is missing", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "workspace-summary-capacity-fallback");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.jar"), "placeholder", "utf8");
+
+    const server = store.createServer({
+      name: "workspace-summary-capacity-fallback",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25627,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 2048
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/servers/${server.id}/workspace-summary`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().summary.players.capacity).toBe(20);
   });
 
   it("blocks safe restart when preflight has critical issues", async () => {

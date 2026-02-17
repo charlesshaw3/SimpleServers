@@ -82,6 +82,8 @@ Error responses include:
 - server identity/status/visibility
 - local + invite address
 - player list counts and capacity
+  - compatibility fields: `players.list`, `players.online`, `players.known`, `players.capacity`
+  - additive fields: `players.onlineList`, `players.knownList`
 - metrics (CPU peak, RAM peak, uptime, alerts, crashes, startup trend)
 - tunnel summary state
 - preflight status
@@ -150,6 +152,7 @@ Legacy file-specific routes are still supported:
 `GET /servers/:id/player-admin` includes:
 
 - `profiles[]` with `isOp`, `isWhitelisted`, `isBanned`, `lastSeenAt`, `lastActionAt`
+- additive fields: `onlinePlayers[]`, `capacity`
 - backward-compatible lists (`ops`, `whitelist`, `bannedPlayers`, `bannedIps`, `history`, `knownPlayers`)
 
 ## Quick Public Hosting
@@ -232,7 +235,8 @@ Providers:
 
 - `GET /migration/imports`
 - `POST /migration/import/manual`
-- `POST /migration/import/manifest`
+- `POST /migration/import/platform-manifest` (canonical platform-manifest import route)
+- `POST /migration/import/manifest` (compatibility alias)
 
 ## Crash Reports
 

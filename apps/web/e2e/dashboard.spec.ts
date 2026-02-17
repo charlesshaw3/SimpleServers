@@ -14,6 +14,8 @@ test("connects and renders dashboard sections", async ({ page }) => {
   let modpackImportCalled = false;
   let setupSessionCreated = false;
   let setupSessionLaunched = false;
+  let workspaceSummaryCalls = 0;
+  let playerAdminActionCalled = false;
 
   await page.route("http://127.0.0.1:4010/**", async (route) => {
     const request = route.request();
@@ -464,6 +466,19 @@ test("connects and renders dashboard sections", async ({ page }) => {
     }
 
     if (pathname === "/servers/srv_1/workspace-summary" && method === "GET") {
+      workspaceSummaryCalls += 1;
+      const onlineList =
+        workspaceSummaryCalls >= 2
+          ? [
+              { name: "Alice", uuid: "offline-alice" },
+              { name: "Bob", uuid: "offline-bob" }
+            ]
+          : [{ name: "Alice", uuid: "offline-alice" }];
+      const knownList = [
+        { name: "Alice", uuid: "offline-alice" },
+        { name: "Bob", uuid: "offline-bob" },
+        { name: "CachedOnly", uuid: "offline-cachedonly" }
+      ];
       await withJson(200, {
         summary: {
           server: {
@@ -479,10 +494,12 @@ test("connects and renders dashboard sections", async ({ page }) => {
             invite: null
           },
           players: {
-            online: 0,
-            known: 0,
+            online: onlineList.length,
+            known: knownList.length,
             capacity: 20,
-            list: []
+            list: knownList,
+            onlineList,
+            knownList
           },
           metrics: {
             windowHours: 6,
@@ -558,14 +575,95 @@ test("connects and renders dashboard sections", async ({ page }) => {
     }
 
     if (pathname === "/servers/srv_1/player-admin" && method === "GET") {
+      const onlinePlayers =
+        workspaceSummaryCalls >= 2
+          ? [
+              { name: "Alice", uuid: "offline-alice" },
+              { name: "Bob", uuid: "offline-bob" }
+            ]
+          : [{ name: "Alice", uuid: "offline-alice" }];
       await withJson(200, {
         state: {
           ops: [],
           whitelist: [],
           bannedPlayers: [],
           bannedIps: [],
-          knownPlayers: [],
+          knownPlayers: [
+            { name: "Alice", uuid: "offline-alice" },
+            { name: "Bob", uuid: "offline-bob" },
+            { name: "CachedOnly", uuid: "offline-cachedonly" }
+          ],
+          onlinePlayers,
+          capacity: 20,
+          profiles: [
+            {
+              name: "Alice",
+              uuid: "offline-alice",
+              isOp: false,
+              isWhitelisted: false,
+              isBanned: false,
+              lastSeenAt: new Date().toISOString(),
+              lastActionAt: null
+            },
+            {
+              name: "Bob",
+              uuid: "offline-bob",
+              isOp: false,
+              isWhitelisted: false,
+              isBanned: false,
+              lastSeenAt: new Date().toISOString(),
+              lastActionAt: null
+            }
+          ],
           history: []
+        }
+      });
+      return;
+    }
+
+    if (pathname === "/servers/srv_1/player-admin/action" && method === "POST") {
+      playerAdminActionCalled = true;
+      await withJson(200, {
+        state: {
+          ops: [],
+          whitelist: [],
+          bannedPlayers: [],
+          bannedIps: [],
+          knownPlayers: [
+            { name: "Alice", uuid: "offline-alice" },
+            { name: "Bob", uuid: "offline-bob" }
+          ],
+          onlinePlayers: [{ name: "Alice", uuid: "offline-alice" }],
+          capacity: 20,
+          profiles: [
+            {
+              name: "Alice",
+              uuid: "offline-alice",
+              isOp: true,
+              isWhitelisted: false,
+              isBanned: false,
+              lastSeenAt: new Date().toISOString(),
+              lastActionAt: new Date().toISOString()
+            },
+            {
+              name: "Bob",
+              uuid: "offline-bob",
+              isOp: false,
+              isWhitelisted: false,
+              isBanned: false,
+              lastSeenAt: new Date().toISOString(),
+              lastActionAt: null
+            }
+          ],
+          history: [
+            {
+              ts: new Date().toISOString(),
+              kind: "op",
+              subject: "Alice",
+              detail: "Promoted to operator",
+              source: "admin"
+            }
+          ]
         }
       });
       return;
@@ -765,7 +863,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
       await withJson(200, {
         generatedAt: new Date().toISOString(),
         build: {
-          appVersion: "0.5.5",
+          appVersion: "0.5.6",
           platform: "darwin",
           arch: "arm64",
           nodeVersion: "v20.0.0",
@@ -1036,8 +1134,19 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
   await page.getByRole("button", { name: "Open Workspace" }).first().click();
   await expect(page.getByRole("heading", { name: "Server Controls" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open player profile for Alice" })).toBeVisible();
+  await expect.poll(async () => page.getByRole("button", { name: "Open player profile for Bob" }).count()).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "Console" }).click();
+  await page.getByRole("button", { name: "Open player profile for Alice" }).click();
+  await expect(page.getByRole("heading", { name: "Alice" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "Alice" })).toBeHidden();
+
+  const dashboardTab = page.getByRole("tab", { name: "Dashboard" });
+  await dashboardTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Console" })).toHaveAttribute("aria-selected", "true");
+
   await expect(page.getByRole("heading", { name: "Preflight Diagnostics" })).toBeVisible();
   await page.getByLabel("Command").fill("say e2e command");
   await page.getByRole("button", { name: "Send" }).click();
@@ -1049,6 +1158,14 @@ test("connects and renders dashboard sections", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Servers", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Create Server" }).first().click();
 
+  await expect(page.getByRole("heading", { name: "Minecraft Server Setup Wizard" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "Minecraft Server Setup Wizard" })).toBeHidden();
+  await page.evaluate(() => {
+    window.location.hash = "#servers-list";
+  });
+  await expect(page.getByRole("heading", { name: "Servers", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Create Server" }).first().click();
   await expect(page.getByRole("heading", { name: "Minecraft Server Setup Wizard" })).toBeVisible();
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Fabric" }).click();
@@ -1063,4 +1180,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
   await page.getByRole("button", { name: "Continue to Dashboard" }).click();
   await expect(page.getByRole("heading", { name: "Server Controls" })).toBeVisible();
+  await page.getByRole("button", { name: "Open player profile for Alice" }).click();
+  await page.locator(".v2-modal").getByRole("button", { name: "Op", exact: true }).click();
+  await expect.poll(() => playerAdminActionCalled).toBe(true);
 });

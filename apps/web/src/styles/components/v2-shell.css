@@ -267,13 +267,20 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  padding-bottom: var(--space-3);
 }
 
 .v2-workspace-tabs button {
   min-width: 108px;
 }
 
-.v2-workspace-tabs button.active {
+.v2-workspace-tabs button[role="tab"] {
+  border-radius: 999px;
+}
+
+.v2-workspace-tabs button.active,
+.v2-workspace-tabs button[aria-selected="true"] {
   border-color: color-mix(in srgb, var(--primary) 66%, var(--border));
   background: color-mix(in srgb, var(--primary) 18%, transparent);
 }
@@ -281,11 +288,12 @@
 .v2-tab-content {
   display: grid;
   gap: var(--space-5);
+  padding-top: var(--space-2);
 }
 
 .v2-workspace-rail {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-4);
   align-content: start;
 }
 
@@ -366,13 +374,22 @@
   width: 100%;
   text-align: left;
   background: transparent;
-  border: 0;
-  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  padding: var(--space-3);
+  border-radius: var(--v2-radius-sm);
 }
 
 .player-row-btn div {
   display: grid;
-  gap: 4px;
+  gap: var(--space-2);
+}
+
+.player-row-btn strong {
+  line-height: 1.2;
+}
+
+.player-row-btn span {
+  color: var(--text-soft);
 }
 
 .v2-modal-backdrop {
@@ -390,6 +407,8 @@
   display: grid;
   gap: var(--space-4);
   box-shadow: var(--v2-elev-3);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
 }
 
 .v2-modal-header {

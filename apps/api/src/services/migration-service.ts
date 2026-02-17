@@ -13,6 +13,7 @@ type ManualImportInput = {
   maxMemoryMb: number;
   javaPath?: string;
   jarPath?: string;
+  source?: "manual" | "platform_manifest";
 };
 
 function ensureUniqueName(name: string): string {
@@ -35,11 +36,11 @@ function ensureUniqueName(name: string): string {
   throw new Error("Could not resolve a unique server name");
 }
 
-function readSquidManifest(manifestPath: string): Array<Record<string, unknown>> {
+function readPlatformManifest(manifestPath: string): Array<Record<string, unknown>> {
   const raw = fs.readFileSync(manifestPath, "utf8");
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid SquidServers manifest payload");
+    throw new Error("Invalid platform manifest payload");
   }
   const asRecord = parsed as Record<string, unknown>;
   const servers = asRecord.servers;
@@ -97,11 +98,11 @@ export class MigrationService {
     });
 
     store.createMigrationImport({
-      source: "manual",
+      source: input.source ?? "manual",
       serverId: server.id,
       name: server.name,
       status: "imported",
-      detail: "Imported existing server directory"
+      detail: input.source === "platform_manifest" ? "Imported from platform manifest" : "Imported existing server directory"
     });
 
     return {
@@ -112,7 +113,7 @@ export class MigrationService {
     };
   }
 
-  importSquidServersManifest(input: {
+  importPlatformManifest(input: {
     manifestPath: string;
     javaPath?: string;
   }): {
@@ -124,7 +125,7 @@ export class MigrationService {
       throw new Error(`Manifest path does not exist: ${manifestPath}`);
     }
 
-    const items = readSquidManifest(manifestPath);
+    const items = readPlatformManifest(manifestPath);
     const imported: Array<{ serverId: string; name: string }> = [];
     const failed: Array<{ name: string; error: string }> = [];
 
@@ -146,7 +147,8 @@ export class MigrationService {
           minMemoryMb: toInt(item.minMemoryMb ?? item.minMemory, 1024),
           maxMemoryMb: toInt(item.maxMemoryMb ?? item.maxMemory, 4096),
           javaPath: typeof item.javaPath === "string" ? item.javaPath : input.javaPath,
-          jarPath: typeof item.jarPath === "string" ? item.jarPath : undefined
+          jarPath: typeof item.jarPath === "string" ? item.jarPath : undefined,
+          source: "platform_manifest"
         });
         imported.push({
           serverId: result.serverId,
@@ -159,7 +161,7 @@ export class MigrationService {
           error: message
         });
         store.createMigrationImport({
-          source: "squidservers",
+          source: "platform_manifest",
           serverId: null,
           name,
           status: "failed",
@@ -172,6 +174,16 @@ export class MigrationService {
       imported,
       failed
     };
+  }
+
+  importSquidServersManifest(input: {
+    manifestPath: string;
+    javaPath?: string;
+  }): {
+    imported: Array<{ serverId: string; name: string }>;
+    failed: Array<{ name: string; error: string }>;
+  } {
+    return this.importPlatformManifest(input);
   }
 
   listRecentImports(limit = 80) {
