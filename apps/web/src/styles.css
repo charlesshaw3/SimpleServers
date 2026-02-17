@@ -1,4 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap");
+@import "./styles/tokens.css";
+@import "./styles/layout.css";
+@import "./styles/components/v2-shell.css";
 
 :root {
   --bg: #09111f;

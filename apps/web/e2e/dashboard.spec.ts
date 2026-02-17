@@ -12,6 +12,8 @@ test("connects and renders dashboard sections", async ({ page }) => {
   let cloudUploadCalled = false;
   let modpackPlanCalled = false;
   let modpackImportCalled = false;
+  let setupSessionCreated = false;
+  let setupSessionLaunched = false;
 
   await page.route("http://127.0.0.1:4010/**", async (route) => {
     const request = route.request();
@@ -113,6 +115,45 @@ test("connects and renders dashboard sections", async ({ page }) => {
         quickHosting: {
           enabled: true,
           publicAddress: "pending.playit.gg:25565",
+          warning: null
+        }
+      });
+      return;
+    }
+
+    if (pathname === "/setup/sessions" && method === "POST") {
+      setupSessionCreated = true;
+      await withJson(200, {
+        session: {
+          id: "setup_1",
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+        }
+      });
+      return;
+    }
+
+    if (pathname === "/setup/sessions/setup_1/launch" && method === "POST") {
+      setupSessionLaunched = true;
+      await withJson(200, {
+        server: {
+          id: "srv_1",
+          name: "Test Server",
+          type: "paper",
+          mcVersion: "1.21.11",
+          port: 25565,
+          bedrockPort: null,
+          minMemoryMb: 2048,
+          maxMemoryMb: 4096,
+          status: "running",
+          createdAt: new Date().toISOString()
+        },
+        started: true,
+        blocked: false,
+        warning: null,
+        quickHosting: {
+          enabled: true,
+          publicAddress: "play.example.test:25565",
           warning: null
         }
       });
@@ -422,6 +463,64 @@ test("connects and renders dashboard sections", async ({ page }) => {
       return;
     }
 
+    if (pathname === "/servers/srv_1/workspace-summary" && method === "GET") {
+      await withJson(200, {
+        summary: {
+          server: {
+            id: "srv_1",
+            name: "Test Server",
+            type: "paper",
+            mcVersion: "1.21.11",
+            status: "running",
+            visibility: "private"
+          },
+          addresses: {
+            local: "127.0.0.1:25565",
+            invite: null
+          },
+          players: {
+            online: 0,
+            known: 0,
+            capacity: 20,
+            list: []
+          },
+          metrics: {
+            windowHours: 6,
+            latest: {
+              sampledAt: new Date().toISOString(),
+              cpuPercent: 10,
+              memoryMb: 1024
+            },
+            cpuPeakPercent: 20,
+            memoryPeakMb: 1500,
+            uptimeSeconds: 120,
+            openAlerts: 0,
+            crashes: 0,
+            startupTrend: []
+          },
+          tunnel: {
+            enabled: false,
+            provider: null,
+            status: "disabled",
+            publicAddress: null,
+            endpointPending: false,
+            steps: []
+          },
+          preflight: {
+            passed: true,
+            blocked: false,
+            issues: []
+          },
+          primaryAction: {
+            id: "go_live",
+            label: "Go Live",
+            available: true
+          }
+        }
+      });
+      return;
+    }
+
     if (pathname === "/servers/srv_1/public-hosting/diagnostics" && method === "GET") {
       await withJson(200, {
         diagnostics: {
@@ -666,7 +765,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
       await withJson(200, {
         generatedAt: new Date().toISOString(),
         build: {
-          appVersion: "0.5.3",
+          appVersion: "0.5.4",
           platform: "darwin",
           arch: "arm64",
           nodeVersion: "v20.0.0",
@@ -674,7 +773,7 @@ test("connects and renders dashboard sections", async ({ page }) => {
           signatureStatus: "development",
           signatureProvider: null,
           releaseChannel: "stable",
-          repository: "https://github.com/dueldev/SimpleServers",
+          repository: "https://github.com/charlesshaw3/SimpleServers",
           signedRelease: false,
           signingMethod: null
         },
@@ -932,88 +1031,36 @@ test("connects and renders dashboard sections", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("button", { name: "Connect" }).click();
-  const nav = page.getByLabel("Workspace views");
 
-  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
-  await nav.getByRole("button", { name: "Share" }).click();
-  await expect(page.getByRole("heading", { name: "Share" })).toBeVisible();
-  await page.getByRole("button", { name: "Set Playit Secret" }).first().click();
-  await expect(page.getByLabel("Playit Secret").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Servers", exact: true })).toBeVisible();
 
-  await nav.getByRole("button", { name: "Create" }).click();
-  await expect(page.getByRole("heading", { name: "Create" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Workspace" }).first().click();
+  await expect(page.getByRole("heading", { name: "Server Controls" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Console" }).click();
+  await expect(page.getByRole("heading", { name: "Preflight Diagnostics" })).toBeVisible();
+  await page.getByLabel("Command").fill("say e2e command");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => commandCalled).toBe(true);
+
+  await page.evaluate(() => {
+    window.location.hash = "#servers-list";
+  });
+  await expect(page.getByRole("heading", { name: "Servers", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Create Server" }).first().click();
+
+  await expect(page.getByRole("heading", { name: "Minecraft Server Setup Wizard" })).toBeVisible();
+  await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Fabric" }).click();
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Next" }).click();
-  await page.getByRole("button", { name: "Create and Launch" }).click();
-  await expect.poll(() => quickStartCalled).toBe(true);
-  await expect(page.getByRole("heading", { name: "Share" })).toBeVisible();
+  await page.getByRole("button", { name: "Launch Server" }).click();
 
-  const advancedControlsButton = page.getByRole("button", { name: "Advanced Controls" });
-  if (await advancedControlsButton.isVisible()) {
-    await advancedControlsButton.click();
-  }
-  await nav.getByRole("button", { name: "Advanced" }).click();
-  await expect(page.getByRole("heading", { name: "Advanced Workspace" })).toBeVisible();
-  await nav.getByRole("button", { name: "Home" }).click();
-  await expect(page.getByRole("heading", { name: "Fleet Controls Hidden in Focus Mode" })).toBeVisible();
-  await page.getByLabel("Layout density").selectOption("full");
-  await expect(page.getByRole("heading", { name: "Server Fleet" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Onboarding Funnel" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Test Server" })).toBeVisible();
-  await page.getByRole("checkbox", { name: "Select Test Server" }).check();
-  await page.getByRole("button", { name: "Backup Selected" }).click();
-  await expect.poll(() => bulkCalled).toBe(true);
-  await page.getByRole("button", { name: "Stop" }).first().click();
-  await expect.poll(() => stopCalled).toBe(true);
-  await expect.poll(() => stopUsedEmptyJsonHeader).toBe(false);
+  await expect.poll(() => setupSessionCreated).toBe(true);
+  await expect.poll(() => setupSessionLaunched).toBe(true);
+  await expect(page.getByRole("heading", { name: "Server Ready" })).toBeVisible();
 
-  await nav.getByRole("button", { name: "Create" }).click();
-  await expect(page.getByRole("heading", { name: "Guided Server Setup" })).toBeVisible();
-  await page.getByRole("button", { name: /Modded Fabric/i }).first().click();
-  await expect(page.getByLabel("Type")).toHaveValue("fabric");
-
-  await page.getByRole("button", { name: "Instant Launch (Recommended)" }).click();
-  await expect.poll(() => quickStartCalled).toBe(true);
-
-  await nav.getByRole("button", { name: "Content" }).click();
-  await page.getByRole("button", { name: "Search" }).click();
-  await expect(page.getByText("Sodium")).toBeVisible();
-  await page.getByLabel("Modpack Project ID").fill("modpack-demo");
-  await page.getByRole("button", { name: "Plan Import" }).click();
-  await expect.poll(() => modpackPlanCalled).toBe(true);
-  await page.getByRole("button", { name: "Import with Rollback" }).click();
-  await expect.poll(() => modpackImportCalled).toBe(true);
-
-  await page.getByRole("button", { name: "Quick Actions" }).click();
-  await expect(page.getByRole("heading", { name: "Quick Actions" })).toBeVisible();
-  await page.getByRole("button", { name: /Open Trust Workspace/i }).click();
-  await expect(page.getByRole("heading", { name: "Security Transparency" })).toBeVisible();
-
-  await nav.getByRole("button", { name: "Fix" }).click();
-  await page.getByLabel("Server Terminal Command").fill("say e2e command");
-  await page.getByRole("button", { name: "Run Command" }).click();
-  await expect.poll(() => commandCalled).toBe(true);
-  await page.getByLabel("Encryption Passphrase").fill("this-is-a-test-passphrase");
-  await page.getByRole("button", { name: "Add Destination" }).click();
-  await expect.poll(() => cloudDestinationSaved).toBe(true);
-  await page.getByRole("button", { name: /Upload -> Primary Cloud Backup/ }).first().click();
-  await expect.poll(() => cloudUploadCalled).toBe(true);
-
-  await nav.getByRole("button", { name: "Trust" }).click();
-  await expect(page.getByRole("heading", { name: "Security Transparency" })).toBeVisible();
-  await page.getByLabel("Local File Path").fill("/tmp/example");
-  await page
-    .getByLabel("Expected SHA-256 (optional)")
-    .fill("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-  await page.getByRole("button", { name: "Verify Checksum" }).click();
-  await expect(page.getByText("Match")).toBeVisible();
-  await page.getByRole("button", { name: "Export JSON" }).click();
-
-  await nav.getByRole("button", { name: "Content" }).click();
-
-  await page.getByRole("button", { name: "Install" }).click();
-  await expect.poll(() => installCalled).toBe(true);
-  await expect.poll(() => telemetryPosted).toBe(true);
+  await page.getByRole("button", { name: "Continue to Dashboard" }).click();
+  await expect(page.getByRole("heading", { name: "Server Controls" })).toBeVisible();
 });

@@ -27,6 +27,8 @@ Error responses include:
 
 - `GET /setup/catalog`
 - `GET /setup/presets`
+- `POST /setup/sessions` (`admin`)
+- `POST /setup/sessions/:id/launch` (`admin`, single-use setup launch)
 - `POST /policy/server-create-preview`
 - `GET /system/java`
 - `GET /system/java/channels`
@@ -39,7 +41,8 @@ Error responses include:
 - `GET /system/hardening-checklist`
 - `GET /system/capabilities`
 
-`GET /setup/presets` returns the guided setup profiles:
+`GET /setup/presets` returns guided setup profiles:
+
 - `custom`
 - `survival`
 - `modded`
@@ -67,13 +70,25 @@ Error responses include:
 - `POST /servers/:id/command` (`moderator`)
 - `GET /servers/:id/logs`
 - `GET /servers/:id/preflight`
-- `GET /servers/:id/simple-status` (aggregated beginner status/checklist/primary action)
+- `GET /servers/:id/simple-status`
+- `GET /servers/:id/workspace-summary` (aggregated workspace state for v2 shell)
 - `GET /servers/:id/performance/advisor?hours=<1-336>`
 - `POST /servers/:id/preflight/repair-core` (`admin`, requires stopped server)
 - `GET /servers/:id/support-bundle`
 - `GET /servers/:id/log-stream` (websocket; auth via `Sec-WebSocket-Protocol: ss-token.<base64url-token>` or query `token`)
 
+`GET /servers/:id/workspace-summary` includes:
+
+- server identity/status/visibility
+- local + invite address
+- player list counts and capacity
+- metrics (CPU peak, RAM peak, uptime, alerts, crashes, startup trend)
+- tunnel summary state
+- preflight status
+- primary action model (`start_server | go_live | copy_invite`)
+
 `POST /servers/quickstart` defaults:
+
 - preset `survival`
 - type `paper` (or `fabric` for `modded` preset)
 - latest stable Minecraft version for selected type
@@ -81,23 +96,15 @@ Error responses include:
 - `startServer=true`
 - `publicHosting=true`
 
-`POST /servers/quickstart` optional beginner-wizard inputs:
+Optional quickstart inputs:
 
 - `memoryPreset`: `small` | `recommended` | `large`
 - `savePath`: parent directory where server folder should be created
 - `worldImportPath`: local world folder to import into the new server
 
-`POST /servers/bulk-action` response includes per-server status results, plus aggregate `total/succeeded/failed`.
-
-`GET /servers/:id/performance/advisor` returns:
-- sampled CPU/RAM aggregates for the selected window
-- startup duration trend (`improving`, `stable`, `regressing`, `insufficient_data`)
-- parsed tick-lag events from runtime logs
-- prioritized advisor hints (`ok`, `warning`, `critical`)
-
 ## File Editing
 
-- `GET /servers/:id/editor/files` (indexed editable text files)
+- `GET /servers/:id/editor/files`
 - `GET /servers/:id/editor/file?path=<relativePath>`
 - `PUT /servers/:id/editor/file` (`admin`)
 - `GET /servers/:id/editor/file/snapshots?path=<relativePath>&limit=<1-100>`
@@ -109,16 +116,6 @@ Legacy file-specific routes are still supported:
 - `GET /servers/:id/files/:fileName`
 - `PUT /servers/:id/files/:fileName` (`admin`)
 - `POST /servers/:id/files/:fileName/diff`
-
-Allowed files:
-
-- `server.properties`
-- `ops.json`
-- `whitelist.json`
-- `banned-ips.json`
-- `banned-players.json`
-
-`editor/file/snapshots` and `editor/file/rollback` work for any indexed editable text file returned by `editor/files`.
 
 ## Backups
 
@@ -135,12 +132,6 @@ Allowed files:
 - `GET /servers/:id/backup-policy`
 - `PUT /servers/:id/backup-policy` (`admin`)
 - `POST /servers/:id/backup-policy/prune-now` (`admin`)
-
-Restore notes:
-
-- `POST /servers/:id/backups/:backupId/restore` always creates a pre-restore safety snapshot first.
-- Restore response includes `restore.preRestoreBackupId` so UI flows can surface rollback checkpoints.
-- Cloud uploads encrypt archives before transfer; cloud restore verifies archive/checksum before replacement.
 
 ## Player Administration
 
@@ -159,20 +150,7 @@ Restore notes:
 - `POST /servers/:id/public-hosting/quick-enable` (`admin`)
 - `GET /servers/:id/public-hosting/status`
 - `GET /servers/:id/public-hosting/diagnostics`
-
-Notes:
-
-- Playit-backed tunnels now synchronize assigned public host/port from Playit run data.
-- `publicAddress` remains `null` while Playit is still assigning an endpoint (`pending`/`starting` states).
-- diagnostics include command availability, auth status, endpoint assignment state, retry timing metadata, and `fixes` action metadata for one-click UI recovery.
-- diagnostics `fixes` can include:
-  - `start_server`
-  - `start_tunnel`
-  - `restart_tunnel`
-  - `set_playit_secret`
-  - `copy_playit_auth_steps`
-  - `refresh_diagnostics`
-  - `go_live_recovery`
+- `POST /tunnels/:id/playit/secret` (`admin`)
 
 ## Tasks
 
@@ -203,7 +181,6 @@ Notes:
 - `POST /tunnels` (`admin`)
 - `POST /tunnels/:id/start` (`moderator`)
 - `POST /tunnels/:id/stop` (`moderator`)
-- `POST /tunnels/:id/playit/secret` (`admin`, stores secret in local app data for Playit endpoint sync)
 
 Providers:
 
@@ -237,7 +214,7 @@ Providers:
 
 - `GET /migration/imports`
 - `POST /migration/import/manual`
-- `POST /migration/import/squidservers`
+- `POST /migration/import/manifest`
 
 ## Crash Reports
 

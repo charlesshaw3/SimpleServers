@@ -50,8 +50,10 @@ const ignoredDirectoryNames = new Set(["node_modules", "libraries", ".git", "cac
 const maxEditableFileBytes = 1024 * 1024; // 1 MB safety guard for in-app editing.
 const maxEditorFiles = 350;
 const maxEditorDepth = 5;
-const APP_VERSION = "0.5.3";
-const REPOSITORY_URL = "https://github.com/dueldev/SimpleServers";
+const APP_VERSION = "0.5.4";
+const REPOSITORY_URL = "https://github.com/charlesshaw3/SimpleServers";
+const SETUP_SESSION_TTL_MS = 15 * 60 * 1000;
+const WORKSPACE_SUMMARY_WINDOW_HOURS = 6;
 
 const userCreateSchema = z.object({
   username: z.string().min(2).max(24),
@@ -730,6 +732,25 @@ export async function registerApiRoutes(
     ]
   }));
 
+  app.post("/setup/sessions", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const parsedQuickStart = quickStartSchema.safeParse(request.body ?? {});
+    if (!parsedQuickStart.success) {
+      throw app.httpErrors.badRequest(parsedQuickStart.error.issues.map((issue) => issue.message).join("; "));
+    }
+
+    const session = createSetupSession(parsedQuickStart.data, request.user!.username);
+    writeAudit(request.user!.username, "setup.session.create", "server", session.id, {
+      expiresAt: session.expiresAt
+    });
+    return {
+      session: {
+        id: session.id,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt
+      }
+    };
+  });
+
   app.post("/policy/server-create-preview", { preHandler: [authenticate] }, async (request) => {
     const payload = applyPreset(createServerSchema.parse(request.body));
     const findings = deps.policy.evaluateServerCreatePolicy({
@@ -1004,6 +1025,127 @@ export async function registerApiRoutes(
     }
     return capabilities;
   }
+
+  type SetupSessionRecord = {
+    id: string;
+    payload: z.infer<typeof quickStartSchema>;
+    createdAt: string;
+    expiresAt: string;
+    createdBy: string;
+  };
+
+  const setupSessions = new Map<string, SetupSessionRecord>();
+
+  const pruneSetupSessions = (): void => {
+    const nowMs = Date.now();
+    for (const [sessionId, session] of setupSessions.entries()) {
+      if (new Date(session.expiresAt).getTime() <= nowMs) {
+        setupSessions.delete(sessionId);
+      }
+    }
+  };
+
+  const createSetupSession = (
+    payload: z.infer<typeof quickStartSchema>,
+    createdBy: string
+  ): SetupSessionRecord => {
+    pruneSetupSessions();
+    const createdAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + SETUP_SESSION_TTL_MS).toISOString();
+    const session: SetupSessionRecord = {
+      id: crypto.randomUUID(),
+      payload,
+      createdAt,
+      expiresAt,
+      createdBy
+    };
+    setupSessions.set(session.id, session);
+    return session;
+  };
+
+  const consumeSetupSession = (sessionId: string): SetupSessionRecord => {
+    pruneSetupSessions();
+    const session = setupSessions.get(sessionId);
+    if (!session) {
+      throw app.httpErrors.notFound("Setup session not found");
+    }
+    setupSessions.delete(sessionId);
+    if (new Date(session.expiresAt).getTime() <= Date.now()) {
+      throw app.httpErrors.badRequest("Setup session has expired. Start the wizard again.");
+    }
+    return session;
+  };
+
+  const loadQuickHostingSnapshot = async (serverId: string) => {
+    const server = store.getServerById(serverId);
+    if (!server) {
+      throw app.httpErrors.notFound("Server not found");
+    }
+
+    const existingTunnels = deps.tunnels.listTunnels(serverId);
+    await Promise.all(
+      existingTunnels
+        .filter((tunnel) => tunnel.provider === "playit")
+        .map((tunnel) =>
+          deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id).catch(() => ({
+            synced: false
+          }))
+        )
+    );
+
+    const tunnels = deps.tunnels.listTunnels(serverId);
+    const activeTunnel = tunnels.find((tunnel) => tunnel.status === "active") ?? tunnels[0] ?? null;
+    const readiness = activeTunnel ? deps.tunnels.getTunnelLaunchReadiness(activeTunnel) : null;
+    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
+    const publicAddress =
+      activeTunnel && hasResolvedPublicAddress ? `${activeTunnel.publicHost}:${String(activeTunnel.publicPort)}` : null;
+    const diagnostics = activeTunnel ? await deps.tunnels.getTunnelDiagnostics(activeTunnel) : null;
+
+    const steps = activeTunnel
+      ? readiness?.ok && hasResolvedPublicAddress
+        ? ["Share the public address with players.", "Keep this app running while hosting."]
+        : [
+            hasResolvedPublicAddress ? readiness?.reason ?? "Tunnel dependency missing." : "Playit is still assigning a public endpoint.",
+            "Start your server to let SimpleServers provision tunnel dependencies automatically, or install the client manually."
+          ]
+      : [
+          "Enable quick hosting to avoid manual port forwarding.",
+          "Start your server to activate your public tunnel.",
+          "Share the public address once it is active."
+        ];
+
+    return {
+      server,
+      activeTunnel,
+      readiness,
+      hasResolvedPublicAddress,
+      publicAddress,
+      diagnostics,
+      steps
+    };
+  };
+
+  const resolvePrimaryActionModel = (input: { running: boolean; publicAddress: string | null; role: UserRole }) => {
+    if (!input.running) {
+      return {
+        id: "start_server" as const,
+        label: "Start Server",
+        available: roleRank[input.role] >= roleRank.moderator
+      };
+    }
+    if (!input.publicAddress) {
+      return {
+        id: "go_live" as const,
+        label: "Go Live",
+        available: roleRank[input.role] >= roleRank.admin
+      };
+    }
+    return {
+      id: "copy_invite" as const,
+      label: "Copy Invite Address",
+      available: true
+    };
+  };
 
   const createAndProvisionServer = async (
     payload: z.infer<typeof createServerSchema>,
@@ -1411,21 +1553,10 @@ export async function registerApiRoutes(
     };
   };
 
-  app.get("/servers", { preHandler: [authenticate] }, async () => ({ servers: store.listServers() }));
-
-  app.post("/servers", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
-    const payload = applyPreset(createServerSchema.parse(request.body));
-    const { server, policyFindings } = await createAndProvisionServer(payload);
-    writeAudit(request.user!.username, "server.create", "server", server.id, payload);
-    return { server, policyFindings };
-  });
-
-  app.post("/servers/quickstart", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
-    const parsedQuickStart = quickStartSchema.safeParse(request.body ?? {});
-    if (!parsedQuickStart.success) {
-      throw app.httpErrors.badRequest(parsedQuickStart.error.issues.map((issue) => issue.message).join("; "));
-    }
-    const payload = parsedQuickStart.data;
+  const runQuickStart = async (
+    payload: z.infer<typeof quickStartSchema>,
+    actorUsername: string
+  ) => {
     const type = payload.type ?? (payload.preset === "modded" ? "fabric" : "paper");
     const hostTotalMemoryMb = Math.max(1024, Math.floor(os.totalmem() / (1024 * 1024)));
     const memoryProfile = resolveQuickStartMemoryProfile(payload.preset, hostTotalMemoryMb, payload.memoryPreset);
@@ -1527,7 +1658,7 @@ export async function registerApiRoutes(
       }
     }
 
-    writeAudit(request.user!.username, "server.quickstart", "server", server.id, {
+    writeAudit(actorUsername, "server.quickstart", "server", server.id, {
       preset: payload.preset,
       type,
       version: resolvedVersion,
@@ -1543,8 +1674,13 @@ export async function registerApiRoutes(
       quickHostingWarning
     });
 
+    const refreshedServer = store.getServerById(server.id);
+    if (!refreshedServer) {
+      throw app.httpErrors.internalServerError("Server was created but could not be reloaded from store");
+    }
+
     return {
-      server: store.getServerById(server.id),
+      server: refreshedServer,
       policyFindings,
       started,
       blocked,
@@ -1561,6 +1697,29 @@ export async function registerApiRoutes(
         worldImportPath: payload.worldImportPath ?? null
       }
     };
+  };
+
+  app.get("/servers", { preHandler: [authenticate] }, async () => ({ servers: store.listServers() }));
+
+  app.post("/servers", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const payload = applyPreset(createServerSchema.parse(request.body));
+    const { server, policyFindings } = await createAndProvisionServer(payload);
+    writeAudit(request.user!.username, "server.create", "server", server.id, payload);
+    return { server, policyFindings };
+  });
+
+  app.post("/servers/quickstart", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const parsedQuickStart = quickStartSchema.safeParse(request.body ?? {});
+    if (!parsedQuickStart.success) {
+      throw app.httpErrors.badRequest(parsedQuickStart.error.issues.map((issue) => issue.message).join("; "));
+    }
+    return runQuickStart(parsedQuickStart.data, request.user!.username);
+  });
+
+  app.post("/setup/sessions/:id/launch", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const session = consumeSetupSession(id);
+    return runQuickStart(session.payload, request.user!.username);
   });
 
   app.post("/servers/bulk-action", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
@@ -2869,127 +3028,160 @@ export async function registerApiRoutes(
 
   app.get("/servers/:id/public-hosting/status", { preHandler: [authenticate] }, async (request) => {
     const { id } = request.params as { id: string };
-    const server = store.getServerById(id);
-    if (!server) {
-      throw app.httpErrors.notFound("Server not found");
-    }
-
-    const existingTunnels = deps.tunnels.listTunnels(id);
-    await Promise.all(
-      existingTunnels
-        .filter((tunnel) => tunnel.provider === "playit")
-        .map((tunnel) =>
-          deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id).catch(() => ({
-            synced: false
-          }))
-        )
-    );
-
-    const tunnels = deps.tunnels.listTunnels(id);
-    const activeTunnel = tunnels.find((tunnel) => tunnel.status === "active") ?? tunnels[0] ?? null;
-    const readiness = activeTunnel ? deps.tunnels.getTunnelLaunchReadiness(activeTunnel) : null;
-    const localAddress = `127.0.0.1:${String(server.port)}`;
-    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
+    const snapshot = await loadQuickHostingSnapshot(id);
+    const localAddress = `127.0.0.1:${String(snapshot.server.port)}`;
     return {
       server: {
-        id: server.id,
-        name: server.name,
-        status: server.status,
+        id: snapshot.server.id,
+        name: snapshot.server.name,
+        status: snapshot.server.status,
         localAddress
       },
-      quickHostReady: Boolean(activeTunnel && readiness?.ok && hasResolvedPublicAddress),
-      publicAddress: hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null,
-      tunnel: activeTunnel,
-      steps: activeTunnel
-        ? readiness?.ok && hasResolvedPublicAddress
-          ? ["Share the public address with players.", "Keep this app running while hosting."]
-          : [
-              hasResolvedPublicAddress ? readiness?.reason ?? "Tunnel dependency missing." : "Playit is still assigning a public endpoint.",
-              "Start your server to let SimpleServers provision tunnel dependencies automatically, or install the client manually."
-            ]
-        : [
-            "Enable quick hosting to avoid manual port forwarding.",
-            "Start your server to activate your public tunnel.",
-            "Share the public address once it is active."
-          ]
+      quickHostReady: Boolean(snapshot.activeTunnel && snapshot.readiness?.ok && snapshot.hasResolvedPublicAddress),
+      publicAddress: snapshot.publicAddress,
+      tunnel: snapshot.activeTunnel,
+      steps: snapshot.steps
     };
   });
 
   app.get("/servers/:id/simple-status", { preHandler: [authenticate] }, async (request) => {
     const { id } = request.params as { id: string };
-    const server = store.getServerById(id);
-    if (!server) {
-      throw app.httpErrors.notFound("Server not found");
-    }
-
-    const existingTunnels = deps.tunnels.listTunnels(id);
-    await Promise.all(
-      existingTunnels
-        .filter((tunnel) => tunnel.provider === "playit")
-        .map((tunnel) =>
-          deps.tunnels.refreshPlayitTunnelPublicEndpoint(tunnel.id).catch(() => ({
-            synced: false
-          }))
-        )
-    );
-
-    const tunnels = deps.tunnels.listTunnels(id);
-    const activeTunnel = tunnels.find((tunnel) => tunnel.status === "active") ?? tunnels[0] ?? null;
-    const running = deps.runtime.isRunning(id) || server.status === "running" || server.status === "starting";
-    const hasResolvedPublicAddress = Boolean(activeTunnel && activeTunnel.publicHost !== "pending.playit.gg");
-    const publicAddress = hasResolvedPublicAddress ? `${activeTunnel!.publicHost}:${String(activeTunnel!.publicPort)}` : null;
-    const diagnostics = activeTunnel ? await deps.tunnels.getTunnelDiagnostics(activeTunnel) : null;
-    const preflight = deps.preflight.run(server);
+    const snapshot = await loadQuickHostingSnapshot(id);
+    const running =
+      deps.runtime.isRunning(id) || snapshot.server.status === "running" || snapshot.server.status === "starting";
+    const preflight = deps.preflight.run(snapshot.server);
     const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
 
-    const primaryAction = !running
-      ? {
-          id: "start_server",
-          label: "Start Server",
-          available: roleRank[request.user!.role] >= roleRank.moderator
-        }
-      : !publicAddress
-        ? {
-            id: "go_live",
-            label: "Go Live",
-            available: roleRank[request.user!.role] >= roleRank.admin
-          }
-        : {
-            id: "copy_invite",
-            label: "Copy Invite Address",
-            available: true
-          };
+    const primaryAction = resolvePrimaryActionModel({
+      running,
+      publicAddress: snapshot.publicAddress,
+      role: request.user!.role
+    });
 
     return {
       server: {
-        id: server.id,
-        name: server.name,
-        status: server.status,
-        localAddress: `127.0.0.1:${String(server.port)}`,
-        inviteAddress: publicAddress
+        id: snapshot.server.id,
+        name: snapshot.server.name,
+        status: snapshot.server.status,
+        localAddress: `127.0.0.1:${String(snapshot.server.port)}`,
+        inviteAddress: snapshot.publicAddress
       },
       quickHosting: {
-        enabled: Boolean(activeTunnel),
-        status: activeTunnel?.status ?? "disabled",
-        endpointPending: Boolean(activeTunnel && !publicAddress),
-        diagnostics: diagnostics
+        enabled: Boolean(snapshot.activeTunnel),
+        status: snapshot.activeTunnel?.status ?? "disabled",
+        endpointPending: Boolean(snapshot.activeTunnel && !snapshot.publicAddress),
+        diagnostics: snapshot.diagnostics
           ? {
-              message: diagnostics.message,
-              endpointAssigned: diagnostics.endpointAssigned,
-              retry: diagnostics.retry
+              message: snapshot.diagnostics.message,
+              endpointAssigned: snapshot.diagnostics.endpointAssigned,
+              retry: snapshot.diagnostics.retry
             }
           : null
       },
       checklist: {
         created: true,
         running,
-        publicReady: Boolean(publicAddress)
+        publicReady: Boolean(snapshot.publicAddress)
       },
       primaryAction,
       preflight: {
         passed: preflight.passed,
         blocked: Boolean(criticalIssue),
         issues: preflight.issues
+      }
+    };
+  });
+
+  app.get("/servers/:id/workspace-summary", { preHandler: [authenticate] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const snapshot = await loadQuickHostingSnapshot(id);
+    const running =
+      deps.runtime.isRunning(id) || snapshot.server.status === "running" || snapshot.server.status === "starting";
+    const preflight = deps.preflight.run(snapshot.server);
+    const criticalIssue = preflight.issues.find((issue) => issue.severity === "critical");
+    const primaryAction = resolvePrimaryActionModel({
+      running,
+      publicAddress: snapshot.publicAddress,
+      role: request.user!.role
+    });
+
+    const playerState = deps.playerAdmin.getState(id, 120);
+    const alerts = store.listAlerts(id);
+    const openAlerts = alerts.filter((entry) => !entry.resolvedAt).length;
+    const crashes = store.listCrashReports(id).length;
+    const since = new Date(Date.now() - WORKSPACE_SUMMARY_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+    const samples = store.listServerPerformanceSamples({
+      serverId: id,
+      since,
+      limit: 240
+    });
+    const cpuPeakPercent = samples.length > 0 ? toFixedNumber(Math.max(...samples.map((entry) => entry.cpuPercent)), 1) : 0;
+    const memoryPeakMb = samples.length > 0 ? toFixedNumber(Math.max(...samples.map((entry) => entry.memoryMb)), 0) : 0;
+    const latestSample = samples[0]
+      ? {
+          sampledAt: samples[0].sampledAt,
+          cpuPercent: toFixedNumber(samples[0].cpuPercent, 1),
+          memoryMb: toFixedNumber(samples[0].memoryMb, 0)
+        }
+      : null;
+    const startupEvents = store.listServerStartupEvents({
+      serverId: id,
+      limit: 40
+    });
+    const latestSuccessfulStartup = startupEvents.find((entry) => entry.success === 1) ?? null;
+    const uptimeSeconds =
+      running && latestSuccessfulStartup
+        ? Math.max(0, Math.floor((Date.now() - new Date(latestSuccessfulStartup.createdAt).getTime()) / 1000))
+        : null;
+
+    return {
+      summary: {
+        server: {
+          id: snapshot.server.id,
+          name: snapshot.server.name,
+          type: snapshot.server.type,
+          mcVersion: snapshot.server.mcVersion,
+          status: snapshot.server.status,
+          visibility: snapshot.publicAddress ? "public" : "private"
+        },
+        addresses: {
+          local: `127.0.0.1:${String(snapshot.server.port)}`,
+          invite: snapshot.publicAddress
+        },
+        players: {
+          online: 0,
+          known: playerState.knownPlayers.length,
+          capacity: 20,
+          list: playerState.knownPlayers
+        },
+        metrics: {
+          windowHours: WORKSPACE_SUMMARY_WINDOW_HOURS,
+          latest: latestSample,
+          cpuPeakPercent,
+          memoryPeakMb,
+          uptimeSeconds,
+          openAlerts,
+          crashes,
+          startupTrend: startupEvents.slice(0, 12).map((entry) => ({
+            createdAt: entry.createdAt,
+            durationMs: entry.durationMs,
+            success: entry.success === 1
+          }))
+        },
+        tunnel: {
+          enabled: Boolean(snapshot.activeTunnel),
+          provider: snapshot.activeTunnel?.provider ?? null,
+          status: snapshot.activeTunnel?.status ?? "disabled",
+          publicAddress: snapshot.publicAddress,
+          endpointPending: Boolean(snapshot.activeTunnel && !snapshot.publicAddress),
+          steps: snapshot.steps
+        },
+        preflight: {
+          passed: preflight.passed,
+          blocked: Boolean(criticalIssue),
+          issues: preflight.issues
+        },
+        primaryAction
       }
     };
   });
@@ -3499,17 +3691,26 @@ export async function registerApiRoutes(
     };
   });
 
-  app.post("/migration/import/squidservers", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+  const importLegacyManifest = (request: { body?: unknown; user?: { username: string } }) => {
     const payload = migrationSquidSchema.parse(request.body ?? {});
     const outcome = deps.migration.importSquidServersManifest({
       manifestPath: payload.manifestPath,
       javaPath: payload.javaPath
     });
-    writeAudit(request.user!.username, "migration.squidservers.import", "system", "migration", {
+    writeAudit(request.user!.username, "migration.manifest.import", "system", "migration", {
       imported: outcome.imported.length,
       failed: outcome.failed.length
     });
     return outcome;
+  };
+
+  app.post("/migration/import/manifest", { preHandler: [authenticate, requireRole("admin")] }, async (request) =>
+    importLegacyManifest(request)
+  );
+
+  app.post("/migration/import/squidservers", { preHandler: [authenticate, requireRole("admin")] }, async (request) => {
+    // Backward-compatible legacy route; use /migration/import/manifest for new clients.
+    return importLegacyManifest(request);
   });
 
   app.get("/servers/:id/crash-reports", { preHandler: [authenticate] }, async (request) => {

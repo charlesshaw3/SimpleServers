@@ -1,0 +1,19 @@
+.v2-shell {
+  width: min(1380px, 95vw);
+  margin: 16px auto 56px;
+  display: grid;
+  gap: 16px;
+}
+
+.v2-main {
+  display: grid;
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .v2-shell {
+    width: min(100vw, 100%);
+    margin: 10px auto 32px;
+    padding: 10px;
+  }
+}

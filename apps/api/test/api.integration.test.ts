@@ -92,7 +92,7 @@ describe("api integration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().build.appVersion).toBe("0.5.3");
+    expect(response.json().build.appVersion).toBe("0.5.4");
     expect(response.json().security.localOnlyByDefault).toBe(true);
     expect(response.json().security.authModel).toBe("token-rbac");
     expect(response.json().exports.auditExportEndpoint).toBe("/audit/export");
@@ -403,6 +403,50 @@ describe("api integration", () => {
     });
     expect(listResponse.statusCode).toBe(200);
     expect(listResponse.json().imports.some((entry: { source: string }) => entry.source === "manual")).toBe(true);
+  });
+
+  it("imports legacy manifest sources through migration manifest endpoint", async () => {
+    const rootPath = path.join(testDataDir, "migration-manifest-server");
+    fs.mkdirSync(rootPath, { recursive: true });
+    fs.writeFileSync(path.join(rootPath, "server.jar"), "placeholder", "utf8");
+
+    const manifestPath = path.join(testDataDir, "migration-manifest.json");
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify(
+        {
+          servers: [
+            {
+              name: "manifest-import-server",
+              type: "paper",
+              mcVersion: "1.21.11",
+              rootPath,
+              port: 25624,
+              minMemoryMb: 1024,
+              maxMemoryMb: 4096
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/migration/import/manifest",
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        manifestPath
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().imported.length).toBe(1);
+    expect(response.json().failed.length).toBe(0);
   });
 
   it("routes terminal command submissions to runtime command dispatcher", async () => {
@@ -1096,6 +1140,90 @@ describe("api integration", () => {
     });
   });
 
+  it("returns aggregated workspace summary payload", async () => {
+    const serverRoot = path.join(testDataDir, "servers", "workspace-summary-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(path.join(serverRoot, "server.jar"), "placeholder", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "eula.txt"), "eula=true\n", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "server.properties"), "motd=workspace-summary\n", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "ops.json"), "[]\n", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "whitelist.json"), "[]\n", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "banned-players.json"), "[]\n", "utf8");
+    fs.writeFileSync(path.join(serverRoot, "banned-ips.json"), "[]\n", "utf8");
+
+    const server = store.createServer({
+      name: "workspace-summary-server",
+      type: "paper",
+      mcVersion: "1.21.11",
+      jarPath: path.join(serverRoot, "server.jar"),
+      rootPath: serverRoot,
+      javaPath: "java",
+      port: 25623,
+      bedrockPort: null,
+      minMemoryMb: 1024,
+      maxMemoryMb: 4096
+    });
+
+    store.createServerPerformanceSample({
+      serverId: server.id,
+      cpuPercent: 12.5,
+      memoryMb: 1024
+    });
+    store.createServerStartupEvent({
+      serverId: server.id,
+      durationMs: 18000,
+      success: true,
+      exitCode: null,
+      detail: "workspace-summary-test"
+    });
+    store.createAlert({
+      serverId: server.id,
+      severity: "warning",
+      kind: "summary_test",
+      message: "summary alert"
+    });
+    store.createCrashReport({
+      serverId: server.id,
+      reason: "test crash",
+      exitCode: 1,
+      reportPath: path.join(serverRoot, "crash-report.txt")
+    });
+
+    const addKnownPlayer = await app.inject({
+      method: "POST",
+      url: `/servers/${server.id}/players/whitelist`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      },
+      payload: {
+        name: "SummaryPlayer"
+      }
+    });
+    expect(addKnownPlayer.statusCode).toBe(200);
+
+    const summaryResponse = await app.inject({
+      method: "GET",
+      url: `/servers/${server.id}/workspace-summary`,
+      headers: {
+        "x-api-token": "test-owner-token"
+      }
+    });
+
+    expect(summaryResponse.statusCode).toBe(200);
+    expect(summaryResponse.json().summary.server).toMatchObject({
+      id: server.id,
+      name: "workspace-summary-server",
+      status: expect.any(String)
+    });
+    expect(summaryResponse.json().summary.addresses.local).toBe("127.0.0.1:25623");
+    expect(summaryResponse.json().summary.metrics.cpuPeakPercent).toBeGreaterThan(0);
+    expect(summaryResponse.json().summary.metrics.memoryPeakMb).toBeGreaterThan(0);
+    expect(summaryResponse.json().summary.metrics.openAlerts).toBeGreaterThan(0);
+    expect(summaryResponse.json().summary.metrics.crashes).toBeGreaterThan(0);
+    expect(summaryResponse.json().summary.players.known).toBeGreaterThan(0);
+    expect(summaryResponse.json().summary.primaryAction.id).toBe("start_server");
+  });
+
   it("blocks safe restart when preflight has critical issues", async () => {
     const serverRoot = path.join(testDataDir, "servers", "safe-restart-blocked-server");
     fs.mkdirSync(serverRoot, { recursive: true });
@@ -1513,6 +1641,69 @@ describe("api integration", () => {
       expect(fs.existsSync(path.join(createdServer!.rootPath, "world", "level.dat"))).toBe(true);
       expect(fs.existsSync(path.join(createdServer!.rootPath, "world", "region", "r.0.0.mca"))).toBe(true);
       expect(createdServer!.maxMemoryMb).toBeGreaterThanOrEqual(4096);
+    } finally {
+      services.setup.provisionServer = originalProvision;
+    }
+  });
+
+  it("creates setup sessions and launches them exactly once", async () => {
+    const saveParent = path.join(testDataDir, "setup-session-saves");
+    fs.mkdirSync(saveParent, { recursive: true });
+
+    const originalProvision = services.setup.provisionServer.bind(services.setup);
+    services.setup.provisionServer = async (input) => {
+      fs.mkdirSync(input.rootPath, { recursive: true });
+      const jarPath = path.join(input.rootPath, "server.jar");
+      fs.writeFileSync(jarPath, "placeholder", "utf8");
+      fs.writeFileSync(path.join(input.rootPath, "eula.txt"), "eula=true\n", "utf8");
+      fs.writeFileSync(path.join(input.rootPath, "server.properties"), "motd=setup-session\n", "utf8");
+      return { jarPath };
+    };
+
+    try {
+      const sessionCreateResponse = await app.inject({
+        method: "POST",
+        url: "/setup/sessions",
+        headers: {
+          "x-api-token": "test-owner-token"
+        },
+        payload: {
+          name: `Session Server ${Date.now()}`,
+          type: "paper",
+          preset: "survival",
+          memoryPreset: "recommended",
+          savePath: saveParent,
+          startServer: false,
+          publicHosting: false
+        }
+      });
+
+      expect(sessionCreateResponse.statusCode).toBe(200);
+      const sessionId = sessionCreateResponse.json().session.id as string;
+      expect(sessionId).toBeTruthy();
+
+      const launchResponse = await app.inject({
+        method: "POST",
+        url: `/setup/sessions/${sessionId}/launch`,
+        headers: {
+          "x-api-token": "test-owner-token"
+        },
+        payload: {}
+      });
+
+      expect(launchResponse.statusCode).toBe(200);
+      expect(launchResponse.json().server.id).toBeTruthy();
+      expect(launchResponse.json().requested.memoryPreset).toBe("recommended");
+
+      const secondLaunchResponse = await app.inject({
+        method: "POST",
+        url: `/setup/sessions/${sessionId}/launch`,
+        headers: {
+          "x-api-token": "test-owner-token"
+        },
+        payload: {}
+      });
+      expect(secondLaunchResponse.statusCode).toBe(404);
     } finally {
       services.setup.provisionServer = originalProvision;
     }

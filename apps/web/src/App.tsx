@@ -1,5 +1,15 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClient } from "./lib/api";
+import { ConnectionStatus } from "./features/common/ConnectionStatus";
+import { ServersListView } from "./features/servers/ServersListView";
+import { SetupWizard } from "./features/setup/SetupWizard";
+import { WorkspaceLayout, type WorkspaceTab } from "./features/workspace/WorkspaceLayout";
+import { DashboardTab } from "./features/workspace/tabs/DashboardTab";
+import { ConsoleTab } from "./features/workspace/tabs/ConsoleTab";
+import { PlayersTab } from "./features/workspace/tabs/PlayersTab";
+import { BackupsTab } from "./features/workspace/tabs/BackupsTab";
+import { SchedulerTab } from "./features/workspace/tabs/SchedulerTab";
+import { SettingsTab } from "./features/workspace/tabs/SettingsTab";
 
 type Server = {
   id: string;
@@ -102,6 +112,61 @@ type QuickStartResult = {
     savePath?: string | null;
     worldImportPath?: string | null;
   };
+};
+
+type PrimaryActionModel = {
+  id: "start_server" | "go_live" | "copy_invite";
+  label: string;
+  available: boolean;
+};
+
+type WorkspaceSummary = {
+  server: {
+    id: string;
+    name: string;
+    type: "vanilla" | "paper" | "fabric";
+    mcVersion: string;
+    status: string;
+    visibility: "public" | "private";
+  };
+  addresses: {
+    local: string;
+    invite: string | null;
+  };
+  players: {
+    online: number;
+    known: number;
+    capacity: number;
+    list: Array<{ name: string; uuid: string }>;
+  };
+  metrics: {
+    windowHours: number;
+    latest: { sampledAt: string; cpuPercent: number; memoryMb: number } | null;
+    cpuPeakPercent: number;
+    memoryPeakMb: number;
+    uptimeSeconds: number | null;
+    openAlerts: number;
+    crashes: number;
+    startupTrend: Array<{
+      createdAt: string;
+      durationMs: number;
+      success: boolean;
+    }>;
+  };
+  tunnel: {
+    enabled: boolean;
+    provider: string | null;
+    status: string;
+    publicAddress: string | null;
+    endpointPending: boolean;
+    steps: string[];
+  };
+  preflight: {
+    passed: boolean;
+    blocked: boolean;
+    issues: PreflightIssue[];
+  };
+  primaryAction: PrimaryActionModel;
 };
 
 type CapabilityMap = Record<string, boolean>;
@@ -649,6 +714,20 @@ type TrustReport = {
 };
 
 type AppView = "overview" | "setup" | "share" | "manage" | "content" | "advanced" | "trust";
+type V2Context = "servers-list" | "setup-wizard" | "server-workspace" | "legacy";
+type SetupWizardPhase = "form" | "launching" | "done";
+type SetupWizardState = {
+  step: 1 | 2 | 3 | 4 | 5;
+  phase: SetupWizardPhase;
+  error: string | null;
+  progress: string[];
+  inviteAddress: string | null;
+};
+type V2RouteState = {
+  context: V2Context;
+  serverId: string | null;
+  tab: WorkspaceTab;
+};
 
 type ViewerIdentity = {
   username: string;
@@ -678,6 +757,69 @@ type CommandPaletteAction = {
   run: () => void;
   disabled?: boolean;
 };
+
+const V2_DEFAULT_TAB: WorkspaceTab = "dashboard";
+
+function isWorkspaceTab(value: string | undefined): value is WorkspaceTab {
+  return value === "dashboard" || value === "console" || value === "players" || value === "backups" || value === "scheduler" || value === "settings";
+}
+
+function parseV2Route(hash: string): V2RouteState {
+  const raw = hash.replace(/^#/, "").trim();
+  if (!raw || raw === "servers-list") {
+    return { context: "servers-list", serverId: null, tab: V2_DEFAULT_TAB };
+  }
+  if (raw === "setup-wizard") {
+    return { context: "setup-wizard", serverId: null, tab: V2_DEFAULT_TAB };
+  }
+  if (raw === "legacy") {
+    return { context: "legacy", serverId: null, tab: V2_DEFAULT_TAB };
+  }
+  if (raw.startsWith("server-workspace/")) {
+    const [, serverId, maybeTab] = raw.split("/");
+    return {
+      context: "server-workspace",
+      serverId: serverId || null,
+      tab: isWorkspaceTab(maybeTab) ? maybeTab : V2_DEFAULT_TAB
+    };
+  }
+  return { context: "servers-list", serverId: null, tab: V2_DEFAULT_TAB };
+}
+
+function toV2Hash(route: V2RouteState): string {
+  if (route.context === "setup-wizard") {
+    return "#setup-wizard";
+  }
+  if (route.context === "legacy") {
+    return "#legacy";
+  }
+  if (route.context === "server-workspace" && route.serverId) {
+    return `#server-workspace/${route.serverId}/${route.tab}`;
+  }
+  return "#servers-list";
+}
+
+function readUiV2Default(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const query = params.get("ui_v2_shell");
+  if (query === "0") {
+    return false;
+  }
+  if (query === "1") {
+    return true;
+  }
+  const stored = window.localStorage.getItem("simpleservers.ui.v2_shell");
+  if (stored === "0") {
+    return false;
+  }
+  if (stored === "1") {
+    return true;
+  }
+  return true;
+}
 
 function normalizeStatus(value: string | null | undefined): string {
   return (value ?? "unknown").toLowerCase();
@@ -933,6 +1075,7 @@ export default function App() {
   const [playitSecretInput, setPlayitSecretInput] = useState("");
   const [savingPlayitSecret, setSavingPlayitSecret] = useState(false);
   const [simpleStatus, setSimpleStatus] = useState<SimpleStatus | null>(null);
+  const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceSummary | null>(null);
   const [runningSimpleFix, setRunningSimpleFix] = useState(false);
   const [simpleFixResult, setSimpleFixResult] = useState<SimpleFixResult | null>(null);
   const [remoteState, setRemoteState] = useState<RemoteState | null>(null);
@@ -1096,6 +1239,14 @@ export default function App() {
   const [themePreference, setThemePreference] = useState<ThemePreference>("colorful");
   const [focusMode, setFocusMode] = useState(true);
   const [powerMode, setPowerMode] = useState(false);
+  const [uiV2ShellEnabled, setUiV2ShellEnabled] = useState<boolean>(() => readUiV2Default());
+  const [v2Route, setV2Route] = useState<V2RouteState>(() => (typeof window !== "undefined" ? parseV2Route(window.location.hash) : parseV2Route("")));
+  const [v2WizardStep, setV2WizardStep] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [v2WizardError, setV2WizardError] = useState<string | null>(null);
+  const [v2WizardPhase, setV2WizardPhase] = useState<SetupWizardPhase>("form");
+  const [v2WizardProgress, setV2WizardProgress] = useState<string[]>([]);
+  const [v2WizardInviteAddress, setV2WizardInviteAddress] = useState<string | null>(null);
+  const [workspacePlayerSearch, setWorkspacePlayerSearch] = useState("");
   const [viewer, setViewer] = useState<ViewerIdentity | null>(null);
   const [hasSearchedContent, setHasSearchedContent] = useState(false);
   const [serverSearch, setServerSearch] = useState("");
@@ -1411,6 +1562,7 @@ export default function App() {
         setQuickHostingStatus(null);
         setQuickHostingDiagnostics(null);
         setSimpleStatus(null);
+        setWorkspaceSummary(null);
         setSimpleFixResult(null);
         setPlayerAdminState(null);
         setPerformanceAdvisor(null);
@@ -1490,6 +1642,7 @@ export default function App() {
       quickHostDiagnosticsRes,
       performanceRes,
       simpleStatusRes,
+      workspaceSummaryRes,
       playerAdminRes,
       modpackRollbacksRes
     ] = await Promise.allSettled([
@@ -1503,6 +1656,7 @@ export default function App() {
       api.current.get<QuickHostingDiagnostics>(`/servers/${serverId}/public-hosting/diagnostics`),
       api.current.get<PerformanceAdvisorReport>(`/servers/${serverId}/performance/advisor?hours=24`),
       api.current.get<SimpleStatus>(`/servers/${serverId}/simple-status`),
+      api.current.get<{ summary: WorkspaceSummary }>(`/servers/${serverId}/workspace-summary`),
       api.current.get<{ state: PlayerAdminState }>(`/servers/${serverId}/player-admin?limit=200`),
       api.current.get<{ rollbacks: ModpackRollback[] }>(`/servers/${serverId}/modpack/rollbacks`)
     ]);
@@ -1537,6 +1691,11 @@ export default function App() {
     if (simpleStatusRes.status === "fulfilled") {
       setSimpleStatus(simpleStatusRes.value);
     }
+    if (workspaceSummaryRes.status === "fulfilled") {
+      setWorkspaceSummary(workspaceSummaryRes.value.summary);
+    } else {
+      setWorkspaceSummary(null);
+    }
     if (playerAdminRes.status === "fulfilled") {
       setPlayerAdminState(playerAdminRes.value.state);
     }
@@ -1556,6 +1715,7 @@ export default function App() {
         quickHostDiagnosticsRes,
         performanceRes,
         simpleStatusRes,
+        workspaceSummaryRes,
         playerAdminRes,
         modpackRollbacksRes
       ].find((entry) => entry.status === "rejected") as PromiseRejectedResult | undefined;
@@ -1801,6 +1961,7 @@ export default function App() {
     setHasSearchedContent(false);
     setContentResults([]);
     setSimpleFixResult(null);
+    setWorkspaceSummary(null);
   }, [selectedServerId]);
 
   useEffect(() => {
@@ -1876,6 +2037,48 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("simpleservers.ui.focus_mode", focusMode ? "1" : "0");
   }, [focusMode]);
+
+  useEffect(() => {
+    const onHashChange = (): void => {
+      setV2Route(parseV2Route(window.location.hash));
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("simpleservers.ui.v2_shell", uiV2ShellEnabled ? "1" : "0");
+  }, [uiV2ShellEnabled]);
+
+  useEffect(() => {
+    if (!uiV2ShellEnabled) {
+      return;
+    }
+    const expected = toV2Hash(v2Route);
+    if (window.location.hash !== expected) {
+      window.history.replaceState(null, "", expected);
+    }
+  }, [uiV2ShellEnabled, v2Route]);
+
+  useEffect(() => {
+    if (!uiV2ShellEnabled) {
+      return;
+    }
+    if (v2Route.context !== "server-workspace") {
+      return;
+    }
+    const nextServerId = v2Route.serverId ?? selectedServerId ?? servers[0]?.id ?? null;
+    if (!nextServerId) {
+      setV2Route((previous) => ({ ...previous, context: "servers-list", serverId: null }));
+      return;
+    }
+    if (selectedServerId !== nextServerId) {
+      setSelectedServerId(nextServerId);
+    }
+    if (v2Route.serverId !== nextServerId) {
+      setV2Route((previous) => ({ ...previous, serverId: nextServerId }));
+    }
+  }, [uiV2ShellEnabled, v2Route, selectedServerId, servers]);
 
   useEffect(() => {
     if (!commandPaletteOpen) {
@@ -2305,6 +2508,137 @@ export default function App() {
       if (invite) {
         copyAddress(invite);
       }
+    }
+  }
+
+  function openV2ServersList(): void {
+    setV2Route({
+      context: "servers-list",
+      serverId: null,
+      tab: V2_DEFAULT_TAB
+    });
+  }
+
+  function openV2SetupWizard(): void {
+    setV2WizardStep(1);
+    setV2WizardPhase("form");
+    setV2WizardProgress([]);
+    setV2WizardInviteAddress(null);
+    setV2WizardError(null);
+    setV2Route({
+      context: "setup-wizard",
+      serverId: null,
+      tab: V2_DEFAULT_TAB
+    });
+  }
+
+  function openV2Workspace(serverId?: string | null, tab: WorkspaceTab = V2_DEFAULT_TAB): void {
+    const resolvedServerId = serverId ?? selectedServerId ?? servers[0]?.id ?? null;
+    if (!resolvedServerId) {
+      openV2ServersList();
+      return;
+    }
+    setSelectedServerId(resolvedServerId);
+    setV2Route({
+      context: "server-workspace",
+      serverId: resolvedServerId,
+      tab
+    });
+  }
+
+  function openLegacyWorkspace(): void {
+    setUiV2ShellEnabled(false);
+    setNotice("Switched to legacy workspace. Set localStorage key `simpleservers.ui.v2_shell` to `1` to return to v2 shell.");
+    setError(null);
+  }
+
+  function validateV2WizardStep(step: 1 | 2 | 3 | 4 | 5): string | null {
+    if (step === 1 && !connected) {
+      return "Connect to the API before launching setup.";
+    }
+    if (step === 2 && !createServer.type) {
+      return "Choose a server type.";
+    }
+    if (step === 3 && createServer.worldSource === "import" && createServer.worldImportPath.trim().length === 0) {
+      return "Add the world folder path before continuing.";
+    }
+    if (step === 4 && createServer.name.trim().length < 2) {
+      return "Server name must be at least 2 characters.";
+    }
+    return null;
+  }
+
+  function nextV2WizardStep(): void {
+    const issue = validateV2WizardStep(v2WizardStep);
+    if (issue) {
+      setV2WizardError(issue);
+      return;
+    }
+    setV2WizardError(null);
+    setV2WizardStep((previous) => Math.min(5, previous + 1) as 1 | 2 | 3 | 4 | 5);
+  }
+
+  function previousV2WizardStep(): void {
+    setV2WizardError(null);
+    setV2WizardStep((previous) => Math.max(1, previous - 1) as 1 | 2 | 3 | 4 | 5);
+  }
+
+  async function launchV2Wizard(): Promise<void> {
+    const issue = validateV2WizardStep(5);
+    if (issue) {
+      setV2WizardError(issue);
+      return;
+    }
+
+    const worldImportPath = createServer.worldSource === "import" ? createServer.worldImportPath.trim() : undefined;
+    const payload = {
+      name: createServer.name,
+      preset: createServer.preset,
+      type: createServer.type,
+      publicHosting: createServer.quickPublicHosting,
+      startServer: true,
+      allowCracked: createServer.allowCracked,
+      memoryPreset: createServer.memoryPreset,
+      savePath: createServer.savePath.trim() || undefined,
+      worldImportPath
+    };
+
+    try {
+      setBusy(true);
+      setV2WizardError(null);
+      setV2WizardPhase("launching");
+      setV2WizardProgress(["Preparing setup session..."]);
+      const session = await api.current.post<{ session: { id: string } }>("/setup/sessions", payload);
+      setV2WizardProgress((previous) => [...previous, "Launching server runtime..."]);
+      const response = await api.current.post<QuickStartResult>(`/setup/sessions/${session.session.id}/launch`, {});
+
+      if (response.server?.id) {
+        setSelectedServerId(response.server.id);
+        setV2WizardProgress((previous) => [...previous, "Server created and selected."]);
+      }
+      if (response.started) {
+        setV2WizardProgress((previous) => [...previous, "Runtime started."]);
+      } else if (response.blocked) {
+        setV2WizardProgress((previous) => [...previous, "Startup blocked by preflight checks."]);
+      }
+      const quickHostingWarning = response.quickHosting.warning;
+      if (response.quickHosting.publicAddress) {
+        setV2WizardProgress((previous) => [...previous, `Public address ready: ${response.quickHosting.publicAddress}`]);
+      } else if (typeof quickHostingWarning === "string" && quickHostingWarning.trim().length > 0) {
+        setV2WizardProgress((previous) => [...previous, quickHostingWarning]);
+      }
+
+      setV2WizardInviteAddress(response.quickHosting.publicAddress ?? null);
+      setV2WizardPhase("done");
+      await refreshAll();
+      setNotice(response.warning ?? "Wizard launch completed.");
+      setError(null);
+    } catch (e) {
+      setV2WizardPhase("form");
+      setV2WizardError(toErrorMessage(e));
+      setError(toErrorMessage(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -4182,8 +4516,347 @@ export default function App() {
     }
   }
 
+  const setupWizardState: SetupWizardState = {
+    step: v2WizardStep,
+    phase: v2WizardPhase,
+    error: v2WizardError,
+    progress: v2WizardProgress,
+    inviteAddress: v2WizardInviteAddress
+  };
+  const workspacePlayers = workspaceSummary?.players.list ?? playerAdminState?.knownPlayers ?? [];
+  const v2UptimeSeconds =
+    workspaceSummary?.metrics.uptimeSeconds ??
+    (selectedServer ? Math.max(0, Math.floor((Date.now() - new Date(selectedServer.createdAt).getTime()) / 1000)) : null);
+  const v2StartupSamples = workspaceSummary?.metrics.startupTrend ?? performanceAdvisor?.advisor.startup.recent ?? [];
+  const v2CpuPeakPercent = workspaceSummary?.metrics.cpuPeakPercent ?? performanceAdvisor?.advisor.metrics.cpu.peakPercent ?? 0;
+  const v2MemoryPeakMb = workspaceSummary?.metrics.memoryPeakMb ?? performanceAdvisor?.advisor.metrics.memory.peakMb ?? 0;
+  const v2OpenAlerts = workspaceSummary?.metrics.openAlerts ?? status?.alerts.open ?? unresolvedAlerts.length;
+  const v2Crashes = workspaceSummary?.metrics.crashes ?? status?.servers.crashed ?? 0;
+  const v2InviteAddress = workspaceSummary?.addresses.invite ?? quickHostingStatus?.publicAddress ?? null;
+  const v2ServerStatus = normalizeStatus(workspaceSummary?.server.status ?? selectedServer?.status);
+  const v2CanStart = canStartServer(v2ServerStatus);
+  const v2CanStop = canStopServer(v2ServerStatus);
+  const v2PlayerCapacity = workspaceSummary?.players.capacity ?? 20;
+  const resolvedSignatureStatus = desktopBridge?.signatureStatus ?? trustReport?.build.signatureStatus ?? null;
+  const v2PreflightHints = useMemo(() => {
+    const hints: string[] = [];
+    if (createServer.allowCracked) {
+      hints.push("Non-premium mode reduces identity trust. Enable only for trusted groups.");
+    }
+    if (!createServer.quickPublicHosting) {
+      hints.push("Quick hosting is disabled. You may need local-network access only until enabled.");
+    }
+    if (createServer.memoryPreset === "small") {
+      hints.push("Small memory profile may cause instability on modded servers.");
+    }
+    if (createServer.worldSource === "import" && createServer.worldImportPath.trim().length === 0) {
+      hints.push("Import path is empty. Launch will fail until the world folder path is set.");
+    }
+    if (hardware && hardware.totalMemoryMb < 8192) {
+      hints.push("Host has limited RAM. Keep game client and server memory balanced.");
+    }
+    return hints;
+  }, [
+    createServer.allowCracked,
+    createServer.quickPublicHosting,
+    createServer.memoryPreset,
+    createServer.worldSource,
+    createServer.worldImportPath,
+    hardware
+  ]);
+
+  const workspaceTabContent =
+    v2Route.tab === "dashboard" ? (
+      <DashboardTab
+        serverCount={status?.servers.total ?? servers.length}
+        openAlerts={v2OpenAlerts}
+        crashes={v2Crashes}
+        cpuPeakPercent={v2CpuPeakPercent}
+        memoryPeakMb={v2MemoryPeakMb}
+        uptimeSeconds={v2UptimeSeconds}
+        quickAddress={v2InviteAddress}
+        startupSamples={v2StartupSamples}
+        onGoLive={() => {
+          void goLiveNow();
+        }}
+        onCopyAddress={() => copyAddress(v2InviteAddress ?? "")}
+      />
+    ) : v2Route.tab === "console" ? (
+      <ConsoleTab
+        logs={logs}
+        liveConsole={liveConsole}
+        logStreamLabel={logStreamBadge.label}
+        terminalCommand={terminalCommand}
+        sendingTerminalCommand={sendingTerminalCommand}
+        preflightIssues={preflight?.issues ?? []}
+        onToggleLiveConsole={setLiveConsole}
+        onTerminalCommandChange={setTerminalCommand}
+        onSendCommand={(event) => {
+          void sendServerTerminalCommand(event);
+        }}
+        onRefreshLogs={() => {
+          if (selectedServerId) {
+            void refreshLogs(selectedServerId);
+          }
+        }}
+      />
+    ) : v2Route.tab === "players" ? (
+      <PlayersTab
+        state={playerAdminState}
+        playerActionName={playerActionName}
+        playerActionUuid={playerActionUuid}
+        playerBanReason={playerBanReason}
+        playerIpInput={playerIpInput}
+        runningPlayerAction={runningPlayerAction}
+        onSetPlayerActionName={setPlayerActionName}
+        onSetPlayerActionUuid={setPlayerActionUuid}
+        onSetPlayerBanReason={setPlayerBanReason}
+        onSetPlayerIpInput={setPlayerIpInput}
+        onAddOp={() => {
+          void addOpPlayer();
+        }}
+        onRemoveOp={() => {
+          void removeOpPlayer();
+        }}
+        onAddWhitelist={() => {
+          void addWhitelistPlayer();
+        }}
+        onRemoveWhitelist={() => {
+          void removeWhitelistPlayer();
+        }}
+        onBanPlayer={() => {
+          void banPlayer();
+        }}
+        onUnbanPlayer={() => {
+          void unbanPlayer();
+        }}
+        onBanIp={() => {
+          void banIpAddress();
+        }}
+        onUnbanIp={() => {
+          void unbanIpAddress();
+        }}
+      />
+    ) : v2Route.tab === "backups" ? (
+      <BackupsTab
+        backups={backups}
+        backupPolicy={backupPolicy}
+        onPatchPolicy={(patch) =>
+          setBackupPolicy((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  ...patch
+                }
+              : previous
+          )
+        }
+        onCreateBackup={() => {
+          if (selectedServerId) {
+            void createBackup(selectedServerId);
+          }
+        }}
+        onRestoreBackup={(backupId) => {
+          void restoreBackup(backupId);
+        }}
+        onSavePolicy={() => {
+          void saveBackupPolicy();
+        }}
+        onPruneNow={() => {
+          void pruneBackupsNow();
+        }}
+      />
+    ) : v2Route.tab === "scheduler" ? (
+      <SchedulerTab
+        servers={servers.map((server) => ({
+          id: server.id,
+          name: server.name
+        }))}
+        tasks={tasks}
+        taskForm={taskForm}
+        onPatchTaskForm={(patch) => setTaskForm((previous) => ({ ...previous, ...patch }))}
+        onCreateTask={(event) => {
+          void createTaskSubmit(event);
+        }}
+        onToggleTask={(task) => {
+          const fullTask = tasks.find((entry) => entry.id === task.id);
+          if (fullTask) {
+            void toggleTask(fullTask);
+          }
+        }}
+      />
+    ) : (
+      <SettingsTab
+        themePreference={themePreference}
+        remoteState={remoteState}
+        trustSigned={resolvedSignatureStatus === null ? null : resolvedSignatureStatus === "signed"}
+        onThemeChange={setThemePreference}
+        onOpenLegacyWorkspace={openLegacyWorkspace}
+        onRunCrashDoctor={() => {
+          void runCrashDoctor();
+        }}
+        onRefreshAll={() => {
+          void refreshAll();
+        }}
+      />
+    );
+
+  if (uiV2ShellEnabled) {
+    return (
+      <div className="v2-shell">
+        <ConnectionStatus
+          connected={connected}
+          busy={busy}
+          viewer={viewer}
+          apiBase={apiBase}
+          token={token}
+          onApiBaseChange={setApiBase}
+          onTokenChange={setToken}
+          onConnect={() => {
+            void connect();
+          }}
+        />
+
+        {error ? <div className="error-banner" role="alert">{error}</div> : null}
+        {notice && !error ? <div className="notice-banner" aria-live="polite">{notice}</div> : null}
+
+        <main className="v2-main">
+          {v2Route.context === "servers-list" ? (
+            <ServersListView
+              servers={servers}
+              filteredServers={filteredServers}
+              selectedServerId={selectedServerId}
+              search={serverSearch}
+              busy={busy}
+              onSearchChange={setServerSearch}
+              onSelectServer={setSelectedServerId}
+              onOpenSetup={openV2SetupWizard}
+              onOpenWorkspace={(serverId) => openV2Workspace(serverId)}
+              onDeleteServer={(server) => {
+                void deleteServer(server as Server);
+              }}
+              deletingServerId={deletingServerId}
+              statusTone={statusTone}
+              normalizeStatus={normalizeStatus}
+            />
+          ) : null}
+
+          {v2Route.context === "server-workspace" && selectedServer ? (
+            <WorkspaceLayout
+              serverName={workspaceSummary?.server.name ?? selectedServer.name}
+              serverVersion={`${workspaceSummary?.server.type ?? selectedServer.type} ${workspaceSummary?.server.mcVersion ?? selectedServer.mcVersion}`}
+              serverStatus={v2ServerStatus}
+              publicAddress={v2InviteAddress}
+              playerCapacityLabel={`${workspacePlayers.length}/${v2PlayerCapacity} players`}
+              canStart={v2CanStart}
+              canStop={v2CanStop}
+              onStart={() => {
+                if (selectedServerId) {
+                  void serverAction(selectedServerId, "start");
+                }
+              }}
+              onStop={() => {
+                if (selectedServerId) {
+                  void serverAction(selectedServerId, "stop");
+                }
+              }}
+              onRestart={() => {
+                if (selectedServerId) {
+                  void serverAction(selectedServerId, "restart");
+                }
+              }}
+              onKill={() => {
+                if (selectedServerId) {
+                  void serverAction(selectedServerId, "stop");
+                }
+              }}
+              activeTab={v2Route.tab}
+              onChangeTab={(tab) =>
+                setV2Route((previous) => ({
+                  ...previous,
+                  context: "server-workspace",
+                  serverId: selectedServerId,
+                  tab
+                }))
+              }
+              players={workspacePlayers}
+              playerSearch={workspacePlayerSearch}
+              onPlayerSearchChange={setWorkspacePlayerSearch}
+            >
+              {workspaceTabContent}
+            </WorkspaceLayout>
+          ) : null}
+
+          {v2Route.context === "server-workspace" && !selectedServer ? (
+            <section className="panel">
+              <h2>No Server Selected</h2>
+              <p className="muted-note">Create or select a server from the Servers list.</p>
+              <button type="button" onClick={openV2ServersList}>
+                Open Servers
+              </button>
+            </section>
+          ) : null}
+        </main>
+
+        <SetupWizard
+          visible={v2Route.context === "setup-wizard"}
+          busy={busy}
+          step={setupWizardState.step}
+          model={createServer}
+          error={setupWizardState.error}
+          versionOptions={versionOptions}
+          hardwareMemoryGb={hardware ? Math.floor(hardware.totalMemoryMb / 1024) : null}
+          phase={setupWizardState.phase}
+          launchProgress={setupWizardState.progress}
+          launchAddress={setupWizardState.inviteAddress}
+          preflightHints={v2PreflightHints}
+          onClose={() => {
+            if (selectedServerId) {
+              openV2Workspace(selectedServerId);
+            } else {
+              openV2ServersList();
+            }
+          }}
+          onSetStep={(step) => {
+            if (step > v2WizardStep) {
+              const issue = validateV2WizardStep(v2WizardStep);
+              if (issue) {
+                setV2WizardError(issue);
+                return;
+              }
+            }
+            setV2WizardError(null);
+            setV2WizardStep(step);
+          }}
+          onPatch={(patch) => setCreateServer((previous) => ({ ...previous, ...patch }))}
+          onNext={nextV2WizardStep}
+          onBack={previousV2WizardStep}
+          onLaunch={() => {
+            void launchV2Wizard();
+          }}
+          onContinueToWorkspace={() => {
+            setV2WizardPhase("form");
+            setV2WizardStep(1);
+            setV2WizardProgress([]);
+            setV2WizardError(null);
+            openV2Workspace(selectedServerId, "dashboard");
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
+      {!uiV2ShellEnabled ? (
+        <section className="panel">
+          <h2>Legacy Workspace</h2>
+          <p className="muted-note">You are using legacy mode. Switch back to the new Squid-style shell at any time.</p>
+          <button type="button" onClick={() => setUiV2ShellEnabled(true)}>
+            Switch to New Shell
+          </button>
+        </section>
+      ) : null}
       <a href="#main-content" className="skip-link">
         Skip to Main Content
       </a>

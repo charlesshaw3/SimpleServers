@@ -1,0 +1,8 @@
+:root {
+  --v2-radius-lg: 18px;
+  --v2-radius-md: 14px;
+  --v2-radius-sm: 10px;
+  --v2-elev-1: 0 10px 20px rgba(2, 10, 22, 0.28);
+  --v2-elev-2: 0 16px 32px rgba(2, 10, 22, 0.34);
+  --v2-elev-3: 0 28px 56px rgba(2, 10, 22, 0.44);
+}
